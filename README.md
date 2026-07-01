@@ -21,34 +21,29 @@ See `config.yaml` (`transcription_backend`) to choose. English content → `para
 mixed/non-English → `torch_whisper`.
 
 Full-pipeline breakdown, measured on a real **13.5-minute** video (809 s,
-`parakeet` backend), quick vs deep mode:
+`parakeet` backend). "Before" is the original fully-serial path; "now" adds
+pre-inference frame dedup and 8-way concurrency for both captioning and reasoning
+(shared Gemma-4 E4B preset, `--parallel 8`). See [DECISIONS.md](DECISIONS.md) for
+why each knob is set the way it is.
 
-| Stage | Quick | Deep |
-|-------|-------|------|
-| Transcription (parakeet, GPU) | ~27 s | ~29 s |
-| Visual captioning (Gemma4 E4B) | ~14 min (162 frames) | ~35 min (405 frames) |
-| Pass 1 chunk reasoning | ~53 s (3 chunks) | ~2.7 min (9 chunks) |
-| Pass 2 global synthesis | ~34 s | ~85 s |
-| **Total** | **~15.5 min** | **~40 min** |
+**Deep mode** (0.5 fps → 405 frames, 90 s chunks):
 
-Vision and reasoning use the unified `localhost:9090` model manager. Transcription
-went from the #1 bottleneck (~60% of wall time on CPU) to ~3% — the old CPU path
-would have spent ~26 min just transcribing this clip. Deep mode's extra cost is
-almost entirely the 2.5x frame count for captioning; in return it produces
-finer-grained chapters (90 s vs 5 min chunks) and catches themes the coarse pass
-misses.
+| Stage | Before (serial) | Now (dedup + 8-way) |
+|-------|-----------------|---------------------|
+| Transcription (parakeet, GPU) | ~29 s | ~29 s |
+| Visual captioning (Gemma-4 E4B) | ~35 min (405 frames) | **~48 s** (83 unique, ~80% deduped) |
+| Pass 1 chunk reasoning | ~2.7 min (9 chunks, serial) | **~58 s** (up to 8 concurrent) |
+| Pass 2 global synthesis | ~85 s | ~48 s |
+| **Total** | **~40 min** | **~3.5 min** |
 
-Two controls keep visual captioning (~5 s per *unique* frame) from dominating:
-- `caption_dedup` (default on) skips near-identical frames via a perceptual
-  hash *before* inference — duplicates reuse the prior caption at zero cost.
-  On screen recordings / static footage this removes most of the work.
-- `caption_max_concurrent` (default 8) dispatches vision requests in parallel;
-  set it to the llama.cpp server's `--parallel` slot count to keep the GPU busy.
+**Quick mode** (0.2 fps → 162 frames, 5 min chunks) lands at **~3 min** total, with
+captioning ~62 s (59 unique, ~64% deduped).
 
-Pass 1 chunk reasoning is likewise dispatched concurrently
-(`analysis.reasoning_max_concurrent`, default 8), since chunks are independent.
-On a 13.5-min screen recording (deep mode), dedup skipped ~80% of 405 frames and
-the two concurrency knobs cut the full run to well under 4 min.
+The two wins compound: dedup removes most frames *before* inference (biggest on
+screen recordings / static footage), then concurrency runs the survivors in
+parallel. Captioning went from ~86% of wall time to a minority stage; on the
+serial path this clip would have spent over half an hour just describing frames.
+Transcription, once the #1 bottleneck on CPU (~60% of wall time), is now ~15%.
 
 ### GPU ASR setup
 
@@ -105,8 +100,9 @@ video-analysis mcp
 
 ## Modes
 
-Wall time is now dominated by visual captioning (~5 s/frame), so it scales with
-frame count rather than transcription:
+Modes trade detail for wall time mainly via frame-sampling rate and chunk size.
+With dedup + concurrency (below), captioning no longer dominates, so deep mode's
+2.5x frame count costs little extra:
 
 - **quick**: Fast preview — 0.2 fps frame sampling, 5-min chunks, no diarization
 - **deep**: Standard quality — balanced frame rate, scene-based chunking, audio events
@@ -151,6 +147,28 @@ vision_server:
     url: http://localhost:9090
     model: Huihui-gemma-4-E4B-it-abliterated-Q4_K_M
 ```
+
+Pointing both at the **same** model id makes the router load one E4B instance and
+serve both stages from it — no duplicate weights. Start that preset with as many
+parallel slots as you want concurrency for (`parallel = 8` in the llama.cpp
+`presets.ini`). Rationale in [DECISIONS.md](DECISIONS.md).
+
+### Throughput tuning
+
+```yaml
+video:
+    caption_dedup: true          # skip near-duplicate frames before captioning
+    caption_max_concurrent: 8    # concurrent vision requests (match server slots)
+analysis:
+    reasoning_max_concurrent: 8  # concurrent Pass 1 chunk-reasoning requests
+```
+
+- **`caption_dedup`** — perceptual-hash (dHash + brightness) dedup *before*
+  inference; near-identical frames reuse the previous caption at zero cost.
+  Lower `DEDUP_HAMMING_THRESHOLD` in `stage0/vision.py` for denser coverage.
+- **`caption_max_concurrent` / `reasoning_max_concurrent`** — set to the model
+  server's `--parallel` slot count. Higher values just queue server-side; the
+  throughput ceiling is the GPU, so expect ~3x from 8 slots, not 8x.
 
 ## Privacy
 
