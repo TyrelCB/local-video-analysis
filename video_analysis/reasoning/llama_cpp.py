@@ -199,24 +199,101 @@ class LlamaCppClient(VisionClient):
         except Exception:
             return False
 
-    async def unload(self) -> bool:
-        """Ask a llama.cpp router server to unload this client's model.
+    async def unload(self, wait_seconds: float = 15.0) -> bool:
+        """Ask a llama.cpp router server to unload this client's model, and wait
+        until the model actually reports unloaded before returning.
 
-        Best-effort: only the router build (``--models-preset``) exposes
-        ``POST /models/unload``; a plain single-model server returns 404, and
-        "model is not running" is also a no-op success. Callers should treat
-        any False return as advisory, not an error — freeing memory here is
-        an optimization, not a correctness requirement.
+        The ``POST /models/unload`` request returns 200 almost immediately (~5ms),
+        and even the ``/v1/models`` status flips to ``unloaded`` before the CUDA
+        memory is actually released. On this box's unified memory, another process
+        that grabs the GPU in that gap (the AST audio classifier) hits a
+        driver-level ``CUDA out of memory`` at context creation while the server's
+        pool is still mapped. So we wait for the status flip AND then for GPU
+        memory to actually drop and settle (via ``nvidia-smi``) before returning.
+
+        Best-effort: only the router build (``--models-preset``) exposes these
+        endpoints; a plain single-model server returns 404. Callers should treat
+        a False return as advisory, not an error.
         """
+        import asyncio
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
                     f"{self._base_url}/models/unload", json={"model": self.config.model})
-                if resp.status_code == 200:
-                    return True
-                logger.info("llama.cpp unload(%s) returned %d: %s",
-                            self.config.model, resp.status_code, resp.text[:200])
-                return False
+                if resp.status_code != 200:
+                    logger.info("llama.cpp unload(%s) returned %d: %s",
+                                self.config.model, resp.status_code, resp.text[:200])
+                    return False
+
+                # 1) Wait for the router to report the model unloaded.
+                deadline = asyncio.get_event_loop().time() + wait_seconds
+                status_ok = False
+                while asyncio.get_event_loop().time() < deadline:
+                    if await self._model_status() == "unloaded":
+                        status_ok = True
+                        break
+                    await asyncio.sleep(0.25)
+                if not status_ok:
+                    logger.info("llama.cpp unload(%s): not 'unloaded' after %.0fs",
+                                self.config.model, wait_seconds)
+                    return False
+
+                # 2) The status flips before CUDA memory is actually freed. Wait
+                #    until GPU used-memory has dropped and stayed low for two
+                #    consecutive reads, so the pool is genuinely released before a
+                #    GPU-hungry successor (AST) starts.
+                await self._wait_for_gpu_release(deadline)
+                return True
         except Exception as e:
             logger.info("llama.cpp unload(%s) failed: %s", self.config.model, e)
             return False
+
+    @staticmethod
+    async def _wait_for_gpu_release(deadline: float, settle_reads: int = 2) -> None:
+        """Block until nvidia-smi total used memory is low on two consecutive
+        reads (the freed pool has settled), or ``deadline`` passes. No-op if
+        nvidia-smi isn't available."""
+        import asyncio
+        low_streak = 0
+        while asyncio.get_event_loop().time() < deadline:
+            used = await LlamaCppClient._gpu_used_mib()
+            if used is None:
+                return  # can't measure; don't block
+            # < ~2 GiB means the multi-GB model's pool is gone (idle contexts are
+            # only a few hundred MiB).
+            if used < 2048:
+                low_streak += 1
+                if low_streak >= settle_reads:
+                    return
+            else:
+                low_streak = 0
+            await asyncio.sleep(0.25)
+
+    @staticmethod
+    async def _gpu_used_mib() -> int | None:
+        """Total GPU memory in use across compute apps (MiB), or None."""
+        import asyncio
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "nvidia-smi", "--query-compute-apps=used_memory",
+                "--format=csv,noheader,nounits",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await proc.communicate()
+            return sum(int(x) for x in out.decode().split() if x.strip().isdigit())
+        except Exception:
+            return None
+
+    async def _model_status(self) -> str | None:
+        """Return this model's router status ('loaded'/'unloaded') or None."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{self._base_url}/v1/models")
+                if resp.status_code != 200:
+                    return None
+                for m in resp.json().get("data", []):
+                    if m.get("id") == self.config.model:
+                        return (m.get("status") or {}).get("value")
+        except Exception:
+            return None
+        return None

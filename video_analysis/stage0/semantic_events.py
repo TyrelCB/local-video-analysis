@@ -207,29 +207,6 @@ def _merge_runs(raw: list[tuple[float, str, float]],
     return events
 
 
-# Hard address-space ceiling (bytes) for the classifier subprocess. This is a
-# last-resort backstop: with the GPU-required guard above, AST should never run
-# on CPU and blow up host memory — but if some future path regresses, this turns
-# a whole-box OOM/hang into a clean subprocess failure we catch and report,
-# rather than something that forces a power-cycle. 24 GiB comfortably fits GPU
-# CUDA context + model + one audio segment while leaving the box responsive.
-_SUBPROCESS_MEM_LIMIT_BYTES = 24 * 1024**3
-
-
-def _limit_address_space() -> None:  # pragma: no cover - runs in child, pre-exec
-    """preexec_fn: cap the child's virtual address space (POSIX only)."""
-    try:
-        import resource
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-        limit = _SUBPROCESS_MEM_LIMIT_BYTES
-        if hard != resource.RLIM_INFINITY:
-            limit = min(limit, hard)
-        resource.setrlimit(resource.RLIMIT_AS, (limit, hard))
-    except Exception:
-        # Best-effort; if we can't set it, proceed without the backstop.
-        pass
-
-
 def _classify_via_subprocess(asr_python: str, audio_path: str, model: str,
                              window_seconds: float, hop_seconds: float,
                              score_threshold: float) -> list[SemanticEvent]:
@@ -249,9 +226,15 @@ def _classify_via_subprocess(asr_python: str, audio_path: str, model: str,
     # memory" mid-forward-pass even with tens of GiB free (a 228 MiB alloc failed
     # with 81 GiB free). expandable_segments avoids that fragmentation so AST
     # actually completes on GPU instead of erroring out to the librosa fallback.
+    #
+    # NOTE: do NOT cap the child's virtual address space (RLIMIT_AS). CUDA on
+    # unified memory reserves a huge *virtual* range at context creation (mmaps
+    # the whole ~130 GB pool); any RLIMIT_AS ceiling makes context creation fail
+    # instantly with "CUDA driver error: out of memory" regardless of free
+    # physical memory. Box safety comes from the GPU-required guard (no CPU
+    # fallback) + windowed transcription, not from a virtual-memory cap.
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
-                          preexec_fn=_limit_address_space)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         raise RuntimeError(
             f"Semantic audio-event subprocess failed:\n{proc.stderr[-2000:]}")
