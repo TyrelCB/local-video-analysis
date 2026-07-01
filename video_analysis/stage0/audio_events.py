@@ -33,8 +33,13 @@ def detect_audio_events(audio_path: str,
                          silence_threshold: float = 0.01,
                          silence_duration: float = 1.0,
                          music_threshold: float = 0.5,
-                         window_size: float = 0.5) -> list[AudioEvent]:
+                         window_size: float = 0.5,
+                         include_onsets: bool = False) -> list[AudioEvent]:
     """Detect audio events in an audio file using librosa analysis.
+
+    This is structural acoustic analysis (silence / music-or-noise / onsets),
+    not semantic sound-event classification — it does not name sounds like
+    "applause" or "laughter".
 
     Args:
         audio_path: Path to the WAV audio file (16kHz mono).
@@ -42,6 +47,9 @@ def detect_audio_events(audio_path: str,
         silence_duration: Minimum duration of silence in seconds.
         music_threshold: Spectral centroid ratio threshold for music detection.
         window_size: Analysis window size in seconds.
+        include_onsets: If True, also emit per-transient "onset" events. These
+            fire on essentially every speech syllable, so they're excluded by
+            default — they add hundreds of low-value rows on talking-head audio.
 
     Returns:
         List of AudioEvent objects sorted by timestamp.
@@ -79,22 +87,23 @@ def detect_audio_events(audio_path: str,
             confidence=0.8,
         ))
 
-    # Detect onset/transient events
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop_length)
-    onset_times = librosa.frames_to_time(onsets, sr=sr, hop_length=hop_length)
-    for t in onset_times:
-        idx = np.argmin(np.abs(times - t))
-        # Skip if in a silence region
-        if _is_in_region(t, silence_regions):
-            continue
-        # Check if this is a significant amplitude spike
-        if idx < len(rms) and rms[idx] > silence_threshold * 10:
-            events.append(AudioEvent(
-                timestamp_seconds=round(t, 3),
-                event_type="onset",
-                description=f"Sound onset at {t:.1f}s",
-                confidence=0.6,
-            ))
+    # Detect onset/transient events (off by default — fires per speech syllable)
+    if include_onsets:
+        onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop_length)
+        onset_times = librosa.frames_to_time(onsets, sr=sr, hop_length=hop_length)
+        for t in onset_times:
+            idx = np.argmin(np.abs(times - t))
+            # Skip if in a silence region
+            if _is_in_region(t, silence_regions):
+                continue
+            # Check if this is a significant amplitude spike
+            if idx < len(rms) and rms[idx] > silence_threshold * 10:
+                events.append(AudioEvent(
+                    timestamp_seconds=round(t, 3),
+                    event_type="onset",
+                    description=f"Sound onset at {t:.1f}s",
+                    confidence=0.6,
+                ))
 
     # Windowed analysis for music/noise classification
     step = int(window_size * sr / hop_length)

@@ -168,6 +168,24 @@ class Database:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def insert_audio_events(self, events: list[tuple]) -> None:
+        """Batch insert audio events. Each tuple: (id, video_id, chunk_id, timestamp_seconds, event_type, description)."""
+        with self.cursor() as cur:
+            cur.executemany(
+                """INSERT INTO audio_events (id, video_id, chunk_id, timestamp_seconds, event_type, description)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                events,
+            )
+
+    def get_audio_events(self, video_id: str) -> list[dict]:
+        """Get all audio events for a video, sorted by timestamp."""
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM audio_events WHERE video_id = ? ORDER BY timestamp_seconds",
+                (video_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def insert_transcript_segments(self, segments: list[dict]) -> None:
         """Batch insert transcript segments. Each dict: {id, video_id, chunk_id, start_seconds, end_seconds, text, speaker, words}."""
         with self.cursor() as cur:

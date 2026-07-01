@@ -20,20 +20,23 @@ when that happens and a CUDA torch build is present, it auto-upgrades to `torch_
 See `config.yaml` (`transcription_backend`) to choose. English content → `parakeet`;
 mixed/non-English → `torch_whisper`.
 
-Full-pipeline breakdown, measured on a real **13.5-minute** video (809 s, quick
-mode, `parakeet` backend):
+Full-pipeline breakdown, measured on a real **13.5-minute** video (809 s,
+`parakeet` backend), quick vs deep mode:
 
-| Stage | Time | Share |
-|-------|------|-------|
-| Transcription (parakeet, GPU) | ~27 s | ~3% |
-| Visual captioning (162 frames, Gemma4 E4B) | ~14 min | ~86% |
-| Pass 1 chunk reasoning (3 chunks) | ~53 s | ~5% |
-| Pass 2 global synthesis | ~34 s | ~4% |
-| **Total** | **~15.5 min** | 100% |
+| Stage | Quick | Deep |
+|-------|-------|------|
+| Transcription (parakeet, GPU) | ~27 s | ~29 s |
+| Visual captioning (Gemma4 E4B) | ~14 min (162 frames) | ~35 min (405 frames) |
+| Pass 1 chunk reasoning | ~53 s (3 chunks) | ~2.7 min (9 chunks) |
+| Pass 2 global synthesis | ~34 s | ~85 s |
+| **Total** | **~15.5 min** | **~40 min** |
 
 Vision and reasoning use the unified `localhost:9090` model manager. Transcription
 went from the #1 bottleneck (~60% of wall time on CPU) to ~3% — the old CPU path
-would have spent ~26 min just transcribing this clip.
+would have spent ~26 min just transcribing this clip. Deep mode's extra cost is
+almost entirely the 2.5x frame count for captioning; in return it produces
+finer-grained chapters (90 s vs 5 min chunks) and catches themes the coarse pass
+misses.
 
 Remaining bottleneck:
 - **Visual captioning** — ~5 s per frame; frame count scales with mode and video length
@@ -99,6 +102,10 @@ frame count rather than transcription:
 - **quick**: Fast preview — 0.2 fps frame sampling, 5-min chunks, no diarization
 - **deep**: Standard quality — balanced frame rate, scene-based chunking, audio events
 - **forensic**: Detailed review — dense sampling (2 fps), small chunks, 15s overlap, diarization + OCR (much slower)
+
+*Audio events* (deep/forensic) are **structural acoustic analysis** — silence and
+music/noise regions detected with librosa. This is not semantic sound-event
+classification; it does not label sounds like applause or laughter.
 
 ## Configuration
 

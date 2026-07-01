@@ -13,13 +13,16 @@ if TYPE_CHECKING:
     from ..stage0.metadata import VideoMetadata
 
 
-def export_markdown(result: object, metadata: object, video_id: str) -> str:
+def export_markdown(result: object, metadata: object, video_id: str,
+                    audio_events: list[dict] | None = None) -> str:
     """Export analysis result as a Markdown report.
 
     Args:
         result: AnalysisResult object or dict.
         metadata: VideoMetadata object or dict.
         video_id: Video identifier.
+        audio_events: Optional list of detected audio-event dicts
+            ({timestamp, type, description}) to summarize in the report.
 
     Returns:
         Markdown-formatted report string.
@@ -114,6 +117,23 @@ def export_markdown(result: object, metadata: object, video_id: str) -> str:
         for speaker, topics in speaker_summary.items():
             lines.append(f"**{speaker}:** {topics}")
         lines.append("")
+
+    # Audio events (structural acoustic analysis: silence / music-or-noise)
+    if audio_events:
+        counts: dict[str, int] = {}
+        for ev in audio_events:
+            counts[ev.get("type", "?")] = counts.get(ev.get("type", "?"), 0) + 1
+        lines.append("## Audio Events")
+        lines.append("")
+        lines.append(", ".join(f"{n} {t}" for t, n in sorted(counts.items())))
+        lines.append("")
+        # List the most notable non-silence events (music/noise), timestamped.
+        notable = [e for e in audio_events if e.get("type") != "silence"]
+        for ev in notable[:15]:
+            lines.append(f"- `{_ts(ev.get('timestamp', 0))}` {ev.get('type', '')}: "
+                         f"{ev.get('description', '')}")
+        if notable:
+            lines.append("")
 
     # Tags
     tags = data.get("tags", [])

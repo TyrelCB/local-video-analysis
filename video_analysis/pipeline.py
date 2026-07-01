@@ -153,6 +153,14 @@ async def run_pipeline(
         ]
         db.insert_scenes(scenes_data)
 
+        # Store audio events
+        if stage0.audio_events:
+            db.insert_audio_events([
+                (f"ae_{i:04d}", video_id, None,
+                 ev.get("timestamp", 0.0), ev.get("type", ""), ev.get("description", ""))
+                for i, ev in enumerate(stage0.audio_events)
+            ])
+
         # ===== Pass 1: Segment Analysis =====
         progress("pass1", 45, "Building chunks...")
 
@@ -338,7 +346,8 @@ def _save_outputs(result: AnalysisResult, output_dir: str,
     # Markdown report
     from .export.markdown_export import export_markdown
     md_path = os.path.join(output_dir, f"{video_id}_report.md")
-    md_content = export_markdown(result, stage0.metadata, video_id)
+    md_content = export_markdown(result, stage0.metadata, video_id,
+                                 audio_events=stage0.audio_events)
     with open(md_path, "w") as f:
         f.write(md_content)
     outputs["markdown"] = md_path

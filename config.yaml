@@ -10,6 +10,9 @@ analysis:
   enable_diarization: false   # Optional — requires pyannote.audio
   enable_ocr: false           # Optional — requires PaddleOCR (Phase 2)
   enable_scene_detection: true
+  # Structural acoustic analysis (silence + music/noise regions via librosa).
+  # NOT semantic sound-event classification — it does not name sounds like
+  # applause or laughter. Noisy per-syllable onsets are filtered out.
   enable_audio_events: true
   enable_embeddings: true
 
