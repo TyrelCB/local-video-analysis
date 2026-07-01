@@ -374,10 +374,101 @@ DEFAULT_PARAKEET_MODEL = "nvidia/parakeet-tdt-0.6b-v2"
 _parakeet_model = None
 _parakeet_model_name = None
 
+# Parakeet transcribes the WHOLE file in one attention pass, and NeMo attention
+# is quadratic in sequence length. On unified-memory hardware (GB10) a ~25-min
+# clip consumed ~91 GB and drove the box to OOM/hang. So for anything longer than
+# this we window the audio, transcribe each window, and stitch timestamps back —
+# bounding peak memory by window length instead of file length. 10-min windows
+# fit comfortably; 15 min (900 s) is the largest single pass we allow.
+_PARAKEET_WINDOW_SECONDS = 600.0
+_PARAKEET_MAX_SINGLE_PASS_SECONDS = 900.0
+
+
+def _parakeet_hyp_to_segments(hyp, time_offset: float) -> list[TranscriptionSegment]:
+    """Convert one NeMo hypothesis to segments, shifting times by ``time_offset``.
+
+    ``time_offset`` is the absolute start (s) of the window this hypothesis came
+    from, so stitched windows carry absolute timestamps.
+    """
+    ts = getattr(hyp, "timestamp", None) or {}
+    segments = ts.get("segment") or []
+    words_all = ts.get("word") or []
+
+    out: list[TranscriptionSegment] = []
+    if segments:
+        for seg in segments:
+            seg_start = seg.get("start", 0.0)
+            seg_end = seg.get("end", 0.0)
+            # Attach the word-level timestamps that fall inside this segment.
+            words = [
+                {
+                    "word": w.get("word", "").strip(),
+                    "start": round(w.get("start", 0.0) + time_offset, 3),
+                    "end": round(w.get("end", 0.0) + time_offset, 3),
+                    "confidence": 0.0,
+                }
+                for w in words_all
+                if seg_start <= w.get("start", 0.0) < seg_end
+            ]
+            out.append(TranscriptionSegment(
+                text=seg.get("segment", "").strip(),
+                start_seconds=round(seg_start + time_offset, 3),
+                end_seconds=round(seg_end + time_offset, 3),
+                words=words,
+                confidence=0.0,
+            ))
+    else:
+        # No segment timestamps — emit a single segment with the full text.
+        text = hyp.text if hasattr(hyp, "text") else str(hyp)
+        out.append(TranscriptionSegment(
+            text=text.strip(), start_seconds=round(time_offset, 3),
+            end_seconds=round(time_offset, 3), words=[],
+        ))
+    return out
+
+
+def _iter_wav_windows(audio_path: str, window_seconds: float):
+    """Yield (offset_seconds, temp_wav_path) windows of a WAV file.
+
+    Reads and writes frame-by-window using the stdlib ``wave`` module so we never
+    hold more than one window of PCM in memory. Temp files are cleaned up by the
+    caller. Assumes a PCM WAV (which ``extract_audio`` always produces).
+    """
+    import tempfile
+    import wave
+
+    with wave.open(audio_path, "rb") as wf:
+        framerate = wf.getframerate()
+        nframes = wf.getnframes()
+        nchannels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        window_frames = int(window_seconds * framerate)
+        if window_frames <= 0:
+            window_frames = nframes
+
+        pos = 0
+        while pos < nframes:
+            wf.setpos(pos)
+            chunk = wf.readframes(min(window_frames, nframes - pos))
+            fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="parakeet_win_")
+            os.close(fd)
+            with wave.open(tmp_path, "wb") as out_wf:
+                out_wf.setnchannels(nchannels)
+                out_wf.setsampwidth(sampwidth)
+                out_wf.setframerate(framerate)
+                out_wf.writeframes(chunk)
+            yield pos / framerate, tmp_path
+            pos += window_frames
+
 
 def _transcribe_parakeet(audio_path: str, model_size: str,
                          device: str | None) -> TranscriptionResult:
     """Transcribe using NVIDIA NeMo Parakeet (English-only, very fast on GPU).
+
+    Long audio is windowed (see ``_PARAKEET_WINDOW_SECONDS``) to bound peak GPU
+    memory — a single full-file pass is quadratic in length and OOMs the box on
+    long clips. Windows are transcribed independently and their timestamps
+    stitched back to absolute time.
 
     Note: Parakeet only handles English audio. For multilingual content use the
     ``torch_whisper`` backend instead.
@@ -395,49 +486,46 @@ def _transcribe_parakeet(audio_path: str, model_size: str,
         if device:
             _parakeet_model = _parakeet_model.to(device)
 
-    out = _parakeet_model.transcribe([audio_path], timestamps=True)
-    hyp = out[0]
-
     result = TranscriptionResult()
     result.language = "en"
     result.model_used = model_name
 
-    ts = getattr(hyp, "timestamp", None) or {}
-    segments = ts.get("segment") or []
-    words_all = ts.get("word") or []
+    try:
+        import wave
+        with wave.open(audio_path, "rb") as wf:
+            duration = wf.getnframes() / float(wf.getframerate() or 1)
+    except Exception:
+        duration = 0.0
 
-    last_end = 0.0
-    if segments:
-        for seg in segments:
-            start = round(seg.get("start", 0.0), 3)
-            end = round(seg.get("end", 0.0), 3)
-            last_end = max(last_end, end)
-            # Attach the word-level timestamps that fall inside this segment.
-            words = [
-                {
-                    "word": w.get("word", "").strip(),
-                    "start": round(w.get("start", 0.0), 3),
-                    "end": round(w.get("end", 0.0), 3),
-                    "confidence": 0.0,
-                }
-                for w in words_all
-                if seg.get("start", 0.0) <= w.get("start", 0.0) < seg.get("end", 0.0)
-            ]
-            result.segments.append(TranscriptionSegment(
-                text=seg.get("segment", "").strip(),
-                start_seconds=start,
-                end_seconds=end,
-                words=words,
-                confidence=0.0,
-            ))
+    if duration <= _PARAKEET_MAX_SINGLE_PASS_SECONDS:
+        # Short enough for one pass — cheapest path, no temp files.
+        out = _parakeet_model.transcribe([audio_path], timestamps=True)
+        result.segments = _parakeet_hyp_to_segments(out[0], time_offset=0.0)
     else:
-        # No segment timestamps — emit a single segment with the full text.
-        text = hyp.text if hasattr(hyp, "text") else str(hyp)
-        result.segments.append(TranscriptionSegment(
-            text=text.strip(), start_seconds=0.0, end_seconds=0.0, words=[],
-        ))
+        logger.info(
+            "Parakeet: audio is %.0fs; windowing into %.0fs chunks to bound GPU "
+            "memory.", duration, _PARAKEET_WINDOW_SECONDS)
+        tmp_paths: list[str] = []
+        try:
+            for offset, tmp_path in _iter_wav_windows(audio_path, _PARAKEET_WINDOW_SECONDS):
+                tmp_paths.append(tmp_path)
+                out = _parakeet_model.transcribe([tmp_path], timestamps=True)
+                result.segments.extend(
+                    _parakeet_hyp_to_segments(out[0], time_offset=offset))
+                # NOTE: do NOT call torch.cuda.empty_cache() between windows —
+                # NeMo holds device references across transcribe() calls, and
+                # clearing the allocator cache mid-stream triggers an illegal
+                # memory access on the next window. Per-window activations are
+                # freed when ``out`` goes out of scope, which already bounds peak
+                # memory to one window.
+        finally:
+            for p in tmp_paths:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
-    result.duration_seconds = last_end
+    result.duration_seconds = max((s.end_seconds for s in result.segments), default=0.0)
     return result
 
 

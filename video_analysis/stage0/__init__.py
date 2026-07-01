@@ -146,6 +146,12 @@ async def run_stage_0(video_path: str, output_dir: str,
     if enable_audio_events:
         use_librosa = audio_events_backend != "yamnet"
         if audio_events_backend == "yamnet":
+            # The AST classifier runs in a separate GPU subprocess. On unified-
+            # memory hardware (e.g. GB10) that pool is shared with the vision
+            # server's resident captioning model, so free it first — captioning
+            # (step 6) is already done and won't need it again this run.
+            if vision_client is not None and hasattr(vision_client, "unload"):
+                await vision_client.unload()
             logger.info("Classifying semantic audio events (AST/AudioSet)...")
             from .semantic_events import classify_sound_events
             try:
@@ -157,11 +163,11 @@ async def run_stage_0(video_path: str, output_dir: str,
                     for e in sem
                 ]
                 logger.info("Classified %d semantic audio events", len(audio_events))
-            except Exception as exc:
+            except Exception:
                 # Fall back to librosa only on failure — an empty (but successful)
                 # semantic result is a valid answer for speech-only audio.
-                logger.warning("Semantic audio classification failed (%s); "
-                               "falling back to librosa.", exc)
+                logger.exception("Semantic audio classification failed; "
+                                  "falling back to librosa.")
                 use_librosa = True
         if use_librosa:
             logger.info("Detecting audio events (librosa)...")

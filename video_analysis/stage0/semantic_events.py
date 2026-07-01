@@ -85,37 +85,102 @@ def classify_sound_events(audio_path: str,
         audio_path, model, window_seconds, hop_seconds, score_threshold)
 
 
+# How much source audio to hold in memory (as float32 samples) at once. Windows
+# are still streamed into the classifier lazily within a segment, but capping
+# the segment itself bounds peak host memory on very long recordings and gives
+# us a point to release the CUDA allocator cache between segments — this
+# matters on unified-memory hardware (e.g. GB10) where GPU memory is shared
+# with other resident processes.
+_SEGMENT_SECONDS = 600.0  # 10 minutes
+
+
+def _cuda_status() -> tuple[bool, str]:
+    """Return (usable, reason). Distinguishes a truly absent GPU from a present
+    GPU whose CUDA context can't initialize.
+
+    ``torch.cuda.is_available()`` swallows *all* errors and returns False —
+    including the case that bites us on unified-memory hardware (GB10), where the
+    GPU exists but ``cudaGetDeviceCount()`` fails with "out of memory" because the
+    shared pool is already full (resident llama.cpp models, etc.). Conflating that
+    with "no GPU" is exactly what made AST silently fall back to CPU and OOM the
+    whole box. Here we force CUDA init and report the real reason so it's loud.
+    """
+    try:
+        import torch
+    except Exception as e:  # torch not installed in this interpreter
+        return False, f"torch import failed: {e}"
+    try:
+        torch.cuda.init()
+        if torch.cuda.device_count() > 0:
+            return True, "ok"
+        return False, "no CUDA device present"
+    except Exception as e:
+        # GPU may well be there; the context just couldn't be created (usually
+        # OOM on the shared pool). Surfacing this points at the real fix: free
+        # GPU/host memory before this runs, not "the GPU disappeared".
+        return False, f"CUDA present but init failed ({type(e).__name__}: {e})"
+
+
 def _classify_inprocess(audio_path: str, model: str, window_seconds: float,
                         hop_seconds: float, score_threshold: float) -> list[SemanticEvent]:
-    """Run AST classification in the current interpreter (needs torch/transformers)."""
+    """Run AST classification in the current interpreter (needs torch/transformers).
+
+    Requires a usable CUDA device. AST on CPU is not a graceful degradation: each
+    window pads to a fixed ~1024-frame spectrogram through a ViT-sized transformer,
+    and on a long recording the CPU forward pass exhausts memory (fatal on
+    unified-memory boxes) while pinning the CPU at ~10x the GPU runtime. We refuse
+    rather than fall back — the caller drops to the cheap librosa detector instead.
+    """
     import librosa
     import torch
     from transformers import pipeline
 
-    device = 0 if torch.cuda.is_available() else -1
+    cuda_ok, reason = _cuda_status()
+    if not cuda_ok:
+        raise RuntimeError(
+            f"Semantic audio classification (AST) requires a usable GPU but "
+            f"none is available: {reason}. Refusing to run on CPU — it would "
+            f"exhaust memory on long audio. Free GPU/host memory (e.g. unload "
+            f"resident models) or set audio_events_backend=librosa."
+        )
+    device = 0
     clf = pipeline("audio-classification", model=model, device=device)
 
-    y, sr = librosa.load(audio_path, sr=16000, mono=True)
+    sr = 16000
     win = int(window_seconds * sr)
     hop = int(hop_seconds * sr)
-    if win <= 0 or hop <= 0 or len(y) < win:
+    if win <= 0 or hop <= 0:
         return []
 
-    # Build windows, then classify in batches for GPU efficiency.
-    starts = list(range(0, len(y) - win + 1, hop))
-    batch = [{"array": y[s:s + win], "sampling_rate": 16000} for s in starts]
-    results = clf(batch, top_k=3, batch_size=16)
-
-    # Per-window top label (excluding ambient speech), then merge runs.
+    total_duration = librosa.get_duration(path=audio_path)
     raw: list[tuple[float, str, float]] = []
-    for s, preds in zip(starts, results):
-        for p in preds:
-            label = p["label"]
-            if label in _IGNORED_LABELS:
-                continue
-            if p["score"] >= score_threshold:
-                raw.append((s / sr, label, float(p["score"])))
-            break  # only the top non-ignored label per window
+
+    seg_start = 0.0
+    while seg_start < total_duration:
+        seg_end = min(seg_start + _SEGMENT_SECONDS, total_duration)
+        # Overlap by one window so events spanning a segment boundary aren't missed.
+        y, _ = librosa.load(audio_path, sr=sr, mono=True,
+                             offset=seg_start, duration=seg_end - seg_start + window_seconds)
+        if len(y) >= win:
+            starts = range(0, len(y) - win + 1, hop)
+            windows = ({"array": y[s:s + win], "sampling_rate": sr} for s in starts)
+            offsets = list(starts)
+            results = clf(windows, top_k=3, batch_size=16)
+
+            for s, preds in zip(offsets, results):
+                for p in preds:
+                    label = p["label"]
+                    if label in _IGNORED_LABELS:
+                        continue
+                    if p["score"] >= score_threshold:
+                        raw.append((seg_start + s / sr, label, float(p["score"])))
+                    break  # only the top non-ignored label per window
+
+        del y
+        # Release the CUDA allocator cache between segments — matters on
+        # unified-memory hardware where this pool is shared with host RAM.
+        torch.cuda.empty_cache()
+        seg_start += _SEGMENT_SECONDS
 
     return _merge_runs(raw, window_seconds, hop_seconds)
 
@@ -142,6 +207,29 @@ def _merge_runs(raw: list[tuple[float, str, float]],
     return events
 
 
+# Hard address-space ceiling (bytes) for the classifier subprocess. This is a
+# last-resort backstop: with the GPU-required guard above, AST should never run
+# on CPU and blow up host memory — but if some future path regresses, this turns
+# a whole-box OOM/hang into a clean subprocess failure we catch and report,
+# rather than something that forces a power-cycle. 24 GiB comfortably fits GPU
+# CUDA context + model + one audio segment while leaving the box responsive.
+_SUBPROCESS_MEM_LIMIT_BYTES = 24 * 1024**3
+
+
+def _limit_address_space() -> None:  # pragma: no cover - runs in child, pre-exec
+    """preexec_fn: cap the child's virtual address space (POSIX only)."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        limit = _SUBPROCESS_MEM_LIMIT_BYTES
+        if hard != resource.RLIM_INFINITY:
+            limit = min(limit, hard)
+        resource.setrlimit(resource.RLIMIT_AS, (limit, hard))
+    except Exception:
+        # Best-effort; if we can't set it, proceed without the backstop.
+        pass
+
+
 def _classify_via_subprocess(asr_python: str, audio_path: str, model: str,
                              window_seconds: float, hop_seconds: float,
                              score_threshold: float) -> list[SemanticEvent]:
@@ -156,7 +244,14 @@ def _classify_via_subprocess(asr_python: str, audio_path: str, model: str,
     env = dict(os.environ)
     pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    # Use an expandable CUDA allocator. On this unified-memory box (GB10) the
+    # default caching allocator fragments and raises a spurious "CUDA out of
+    # memory" mid-forward-pass even with tens of GiB free (a 228 MiB alloc failed
+    # with 81 GiB free). expandable_segments avoids that fragmentation so AST
+    # actually completes on GPU instead of erroring out to the librosa fallback.
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                          preexec_fn=_limit_address_space)
     if proc.returncode != 0:
         raise RuntimeError(
             f"Semantic audio-event subprocess failed:\n{proc.stderr[-2000:]}")

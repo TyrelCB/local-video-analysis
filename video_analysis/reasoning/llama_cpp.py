@@ -198,3 +198,25 @@ class LlamaCppClient(VisionClient):
                 return resp.status_code == 200
         except Exception:
             return False
+
+    async def unload(self) -> bool:
+        """Ask a llama.cpp router server to unload this client's model.
+
+        Best-effort: only the router build (``--models-preset``) exposes
+        ``POST /models/unload``; a plain single-model server returns 404, and
+        "model is not running" is also a no-op success. Callers should treat
+        any False return as advisory, not an error — freeing memory here is
+        an optimization, not a correctness requirement.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{self._base_url}/models/unload", json={"model": self.config.model})
+                if resp.status_code == 200:
+                    return True
+                logger.info("llama.cpp unload(%s) returned %d: %s",
+                            self.config.model, resp.status_code, resp.text[:200])
+                return False
+        except Exception as e:
+            logger.info("llama.cpp unload(%s) failed: %s", self.config.model, e)
+            return False
