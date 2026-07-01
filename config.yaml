@@ -65,19 +65,24 @@ video:
   ocr_backend: paddleocr      # Only used if enable_ocr is true
 
 models:
-  # Reasoning model — used for Pass 1 and Pass 2
+  # Reasoning model — used for Pass 1 (per-chunk analysis) and Pass 2 (global
+  # synthesis). Qwen3.6-35B (A3B MoE) with a 256K context: much stronger than the
+  # E4B vision model, and its large context fits all chunk summaries in one Pass 2
+  # prompt. The small-context E4B previously 400'd on Pass 2 for long videos
+  # (a 2h video = 76 chunks overflowed the window). Separate from vision_server
+  # now; the router loads/unloads between the captioning and reasoning stages
+  # (they don't overlap — captioning finishes in Stage 0 before Pass 1 starts).
   reasoning_server:
     type: llama_cpp           # llama_cpp | ollama
     url: http://localhost:9090
-    model: Huihui-gemma-4-E4B-it-abliterated-Q4_K_M
-    timeout: 300              # seconds
+    model: Qwen3.6-35B-A3B-UD-Q4_K_XL
+    timeout: 600              # seconds (larger model, longer synthesis prompts)
     temperature: 0.3
     max_tokens: 4096
 
-  # Vision model — used for visual captioning in Stage 0. Shares the same
-  # router preset as reasoning above (parallel=8), so the E4B model loads once
-  # and serves both; concurrent frame captioning (video.caption_max_concurrent)
-  # uses the 8 slots.
+  # Vision model — used for visual captioning in Stage 0. Kept on the fast little
+  # Gemma-4 E4B (multimodal, parallel=8) so captioning — the pipeline's long pole
+  # — stays quick; reasoning uses the larger Qwen model above.
   vision_server:
     type: llama_cpp           # llama_cpp | ollama
     url: http://localhost:9090
