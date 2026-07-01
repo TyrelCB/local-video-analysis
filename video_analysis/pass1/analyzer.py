@@ -7,8 +7,10 @@ summaries, key moments, tags, quotes, issues, and detected actions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from ..reasoning.llama_cpp import LlamaCppClient
@@ -36,6 +38,25 @@ class ChunkAnalysis:
     detected_actions: list[str] = field(default_factory=list)
     speaker_labels: list[str] = field(default_factory=list)
     error: str | None = None
+
+
+def parse_key_moment_time(time_val, default: float) -> float:
+    """Coerce a model-supplied key-moment timestamp to seconds.
+
+    The reasoning model returns "time" in inconsistent shapes: a number, a
+    unit-suffixed string ("12.5s"), a range ("30.0s - 45.0s"), or a *list* of
+    those (["0.0s", "5.0s"]). Extract the first numeric value; fall back to
+    ``default`` (typically the chunk start) when nothing parseable is found.
+    """
+    if isinstance(time_val, list):
+        time_val = time_val[0] if time_val else default
+    if isinstance(time_val, str):
+        nums = re.findall(r"[\d.]+", time_val)
+        return float(nums[0]) if nums else default
+    try:
+        return float(time_val)
+    except (TypeError, ValueError):
+        return default
 
 
 async def analyze_chunk(chunk: ChunkSpec, client: LlamaCppClient,
@@ -123,31 +144,40 @@ async def analyze_chunk(chunk: ChunkSpec, client: LlamaCppClient,
 
 async def analyze_chunks(chunks: list[ChunkSpec], client: LlamaCppClient,
                          video_duration: float,
-                         batch_size: int = 10) -> list[ChunkAnalysis]:
-    """Analyze all chunks, processing in batches.
+                         max_concurrent: int = 8) -> list[ChunkAnalysis]:
+    """Analyze all chunks concurrently, up to max_concurrent in flight.
+
+    Chunk analyses are independent, so they're dispatched in parallel (bounded
+    by a semaphore) to keep a multi-slot reasoning server busy. Results are
+    returned in chunk order regardless of completion order.
 
     Args:
         chunks: List of chunk specifications.
         client: Reasoning model client.
         video_duration: Total video duration.
-        batch_size: Number of chunks to analyze in each batch.
+        max_concurrent: Max concurrent reasoning requests. Set to the server's
+            parallel-slot count; higher values just queue server-side.
 
     Returns:
-        List of ChunkAnalysis results, one per chunk.
+        List of ChunkAnalysis results, one per chunk, in input order.
     """
-    results: list[ChunkAnalysis] = []
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i:i + batch_size]
-        logger.info("Analyzing chunks %d-%d of %d...",
-                     i + 1, min(i + batch_size, len(chunks)), len(chunks))
+    if not chunks:
+        return []
 
-        for chunk in batch:
+    sem = asyncio.Semaphore(max(1, max_concurrent))
+    done = 0
+
+    async def _one(chunk: ChunkSpec) -> ChunkAnalysis:
+        nonlocal done
+        async with sem:
             analysis = await analyze_chunk(chunk, client, video_duration)
-            results.append(analysis)
+        done += 1
+        logger.info("Completed %d/%d chunks", done, len(chunks))
+        return analysis
 
-        logger.info("Completed %d/%d chunks", len(results), len(chunks))
-
-    return results
+    logger.info("Analyzing %d chunks (up to %d concurrent)...",
+                len(chunks), max_concurrent)
+    return list(await asyncio.gather(*(_one(c) for c in chunks)))
 
 
 def _extract_json(text: str) -> str | None:

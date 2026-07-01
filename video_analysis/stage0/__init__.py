@@ -67,7 +67,10 @@ async def run_stage_0(video_path: str, output_dir: str,
                        asr_python: str = "",
                        frame_fps: float = 0.5, scene_threshold: float = 0.3,
                        enable_audio_events: bool = True,
-                       vision_client=None) -> Stage0Output:
+                       vision_client=None,
+                       caption_max_concurrent: int = 4,
+                       caption_dedup: bool = True,
+                       caption_max_frames: int | None = None) -> Stage0Output:
     """Run the complete Stage 0 pipeline.
 
     Args:
@@ -129,7 +132,9 @@ async def run_stage_0(video_path: str, output_dir: str,
         frame_paths = [f.frame_path for f in frames]
         visual_captions = await caption_video_frames(
             video_path, frame_paths, timestamps,
-            llm_client=vision_client, deduplicate=True,
+            llm_client=vision_client, deduplicate=caption_dedup,
+            max_concurrent=caption_max_concurrent,
+            max_frames=caption_max_frames,
         )
     else:
         visual_captions = []

@@ -34,7 +34,7 @@ class AnalysisConfig:
     architecture: str = "stage_0_plus_two_pass"
     chunk_seconds: int = 90
     overlap_seconds: int = 10
-    max_chunks_per_batch: int = 10
+    reasoning_max_concurrent: int = 8   # Concurrent Pass 1 chunk-reasoning requests
     enable_diarization: bool = False
     enable_ocr: bool = False
     enable_scene_detection: bool = True
@@ -61,6 +61,8 @@ class VideoConfig:
     frame_sampling_fps: float = 0.5
     scene_threshold: float = 0.3
     max_frames_per_chunk: int = 12
+    caption_max_concurrent: int = 4     # Concurrent vision requests; match server slots
+    caption_dedup: bool = True          # Skip near-duplicate frames before captioning
     ocr_backend: str = "paddleocr"
 
 
@@ -113,7 +115,10 @@ class AppConfig:
                 default_mode=a.get("default_mode", cfg.analysis.default_mode),
                 chunk_seconds=a.get("chunk_seconds", cfg.analysis.chunk_seconds),
                 overlap_seconds=a.get("overlap_seconds", cfg.analysis.overlap_seconds),
-                max_chunks_per_batch=a.get("max_chunks_per_batch", cfg.analysis.max_chunks_per_batch),
+                reasoning_max_concurrent=a.get(
+                    "reasoning_max_concurrent",
+                    # Back-compat: honor the old key name if present.
+                    a.get("max_chunks_per_batch", cfg.analysis.reasoning_max_concurrent)),
                 enable_diarization=a.get("enable_diarization", cfg.analysis.enable_diarization),
                 enable_ocr=a.get("enable_ocr", cfg.analysis.enable_ocr),
                 enable_scene_detection=a.get("enable_scene_detection", cfg.analysis.enable_scene_detection),
@@ -138,6 +143,9 @@ class AppConfig:
                 frame_sampling_fps=v.get("frame_sampling_fps", cfg.video.frame_sampling_fps),
                 scene_threshold=v.get("scene_threshold", cfg.video.scene_threshold),
                 max_frames_per_chunk=v.get("max_frames_per_chunk", cfg.video.max_frames_per_chunk),
+                caption_max_concurrent=v.get(
+                    "caption_max_concurrent", cfg.video.caption_max_concurrent),
+                caption_dedup=v.get("caption_dedup", cfg.video.caption_dedup),
             )
 
         # Models — reasoning server
@@ -191,12 +199,17 @@ class AppConfig:
         base = self.analysis
         overrides = self.get_mode_config(mode)
         return AnalysisConfig(
+            default_mode=base.default_mode,
+            architecture=base.architecture,
             chunk_seconds=overrides.get("chunk_seconds", base.chunk_seconds),
             overlap_seconds=overrides.get("overlap_seconds", base.overlap_seconds),
+            reasoning_max_concurrent=overrides.get(
+                "reasoning_max_concurrent", base.reasoning_max_concurrent),
             enable_diarization=overrides.get("enable_diarization", base.enable_diarization),
             enable_ocr=overrides.get("enable_ocr", base.enable_ocr),
             enable_scene_detection=overrides.get("enable_scene_detection", base.enable_scene_detection),
             enable_audio_events=overrides.get("enable_audio_events", base.enable_audio_events),
+            enable_embeddings=base.enable_embeddings,
         )
 
     def resolve_video_config(self, mode: str) -> VideoConfig:
@@ -205,4 +218,10 @@ class AppConfig:
         overrides = self.get_mode_config(mode)
         return VideoConfig(
             frame_sampling_fps=overrides.get("frame_sampling_fps", base.frame_sampling_fps),
+            scene_threshold=overrides.get("scene_threshold", base.scene_threshold),
+            max_frames_per_chunk=overrides.get("max_frames_per_chunk", base.max_frames_per_chunk),
+            caption_max_concurrent=overrides.get(
+                "caption_max_concurrent", base.caption_max_concurrent),
+            caption_dedup=overrides.get("caption_dedup", base.caption_dedup),
+            ocr_backend=base.ocr_backend,
         )

@@ -38,8 +38,17 @@ almost entirely the 2.5x frame count for captioning; in return it produces
 finer-grained chapters (90 s vs 5 min chunks) and catches themes the coarse pass
 misses.
 
-Remaining bottleneck:
-- **Visual captioning** — ~5 s per frame; frame count scales with mode and video length
+Two controls keep visual captioning (~5 s per *unique* frame) from dominating:
+- `caption_dedup` (default on) skips near-identical frames via a perceptual
+  hash *before* inference — duplicates reuse the prior caption at zero cost.
+  On screen recordings / static footage this removes most of the work.
+- `caption_max_concurrent` (default 8) dispatches vision requests in parallel;
+  set it to the llama.cpp server's `--parallel` slot count to keep the GPU busy.
+
+Pass 1 chunk reasoning is likewise dispatched concurrently
+(`analysis.reasoning_max_concurrent`, default 8), since chunks are independent.
+On a 13.5-min screen recording (deep mode), dedup skipped ~80% of 405 frames and
+the two concurrency knobs cut the full run to well under 4 min.
 
 ### GPU ASR setup
 

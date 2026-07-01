@@ -6,7 +6,9 @@ analysis:
   architecture: stage_0_plus_two_pass
   chunk_seconds: 90           # Target chunk length in seconds
   overlap_seconds: 10         # Overlap between chunks in seconds
-  max_chunks_per_batch: 10    # Process chunks in batches for Pass 1
+  # Concurrent Pass 1 chunk-reasoning requests. Chunks are independent, so this
+  # dispatches them in parallel; set to the reasoning server's --parallel slots.
+  reasoning_max_concurrent: 8
   enable_diarization: false   # Optional — requires pyannote.audio
   enable_ocr: false           # Optional — requires PaddleOCR (Phase 2)
   enable_scene_detection: true
@@ -45,6 +47,15 @@ video:
   frame_sampling_fps: 0.5     # Frames per second for sampling
   scene_threshold: 0.3        # FFmpeg scene detection threshold (0.1–1.0)
   max_frames_per_chunk: 12    # Max visual frames sent to vision model per chunk
+  # Visual captioning is the pipeline's biggest cost. These two knobs cut it:
+  #   caption_dedup          -> skip near-identical frames (perceptual hash) before
+  #                             captioning; near-duplicates reuse the prior caption.
+  #                             Huge win on screen recordings / static footage.
+  #   caption_max_concurrent -> vision requests in flight at once. Set to the
+  #                             llama.cpp server's parallel-slot count (--parallel N).
+  #                             Values above the slot count just queue server-side.
+  caption_dedup: true
+  caption_max_concurrent: 8
   ocr_backend: paddleocr      # Only used if enable_ocr is true
 
 models:
@@ -57,7 +68,10 @@ models:
     temperature: 0.3
     max_tokens: 4096
 
-  # Vision model — used for visual captioning in Stage 0
+  # Vision model — used for visual captioning in Stage 0. Shares the same
+  # router preset as reasoning above (parallel=8), so the E4B model loads once
+  # and serves both; concurrent frame captioning (video.caption_max_concurrent)
+  # uses the 8 slots.
   vision_server:
     type: llama_cpp           # llama_cpp | ollama
     url: http://localhost:9090

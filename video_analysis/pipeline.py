@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -19,7 +18,7 @@ from .models.chunk import Chunk
 from .pass1.chunker import build_chunks
 from .pass1.chunker import ChunkSpec as _ChunkSpec
 from .pass1.analyzer import analyze_chunks as _analyze_chunks
-from .pass1.analyzer import ChunkAnalysis
+from .pass1.analyzer import ChunkAnalysis, parse_key_moment_time
 from .pass2.synthesizer import synthesize as _synthesize
 from .reasoning.llama_cpp import LlamaCppClient, LlamaCppConfig
 from .stage0 import run_stage_0, Stage0Output
@@ -109,6 +108,8 @@ async def run_pipeline(
             scene_threshold=config.video.scene_threshold,
             enable_audio_events=analysis_cfg.enable_audio_events,
             vision_client=vision_client,
+            caption_max_concurrent=video_cfg.caption_max_concurrent,
+            caption_dedup=video_cfg.caption_dedup,
         )
 
         progress("stage0", 40, f"Extracted {len(stage0.transcription.segments)} transcript segments, "
@@ -190,7 +191,7 @@ async def run_pipeline(
         chunk_analyses = await _analyze_chunks(
             chunk_specs, reasoning_client,
             video_duration=stage0.metadata.duration_seconds,
-            batch_size=analysis_cfg.max_chunks_per_batch,
+            max_concurrent=analysis_cfg.reasoning_max_concurrent,
         )
 
         # Store chunk results
@@ -213,14 +214,7 @@ async def run_pipeline(
             # Store key moments
             for j, km in enumerate(analysis.key_moments):
                 time_val = km.get("time", chunk_spec.start_seconds)
-                if isinstance(time_val, str):
-                    # Handle "X.Xs - Y.Ys" or just "X.Xs" format
-                    nums = re.findall(r"[\d.]+", time_val)
-                    time_seconds = float(nums[0]) if nums else chunk_spec.start_seconds
-                elif isinstance(time_val, list):
-                    time_seconds = float(time_val[0]) if time_val else chunk_spec.start_seconds
-                else:
-                    time_seconds = float(time_val)
+                time_seconds = parse_key_moment_time(time_val, chunk_spec.start_seconds)
 
                 db.insert_key_moments([
                     (f"km_{i:03d}_{j:02d}", video_id, chunk_id,
