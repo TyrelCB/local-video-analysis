@@ -1,0 +1,52 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Caches
+.huggingface/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Outputs — generated analysis artifacts
+outputs/
+
+# Media & generated data anywhere except tracked source
+# (scoped so source docs like README.md / PRD-REFINEMENT.md stay tracked)
+*.mp4
+*.wav
+*.jpg
+*.jpeg
+*.png
+*.srt
+*.vtt
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# System
+.DS_Store
+Thumbs.db
+
+# Config with secrets (if any added later)
+config.local.yaml
+
+# Claude Code local state (runtime locks, machine-local settings)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# Unrelated personal files that happen to live in this dir
+lease_renewal_2026.txt

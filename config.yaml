@@ -1,0 +1,108 @@
+# Local Long-Form Video Analysis Engine
+# Default configuration
+
+analysis:
+  default_mode: deep          # quick | deep | forensic
+  architecture: stage_0_plus_two_pass
+  chunk_seconds: 90           # Target chunk length in seconds
+  overlap_seconds: 10         # Overlap between chunks in seconds
+  max_chunks_per_batch: 10    # Process chunks in batches for Pass 1
+  enable_diarization: false   # Optional — requires pyannote.audio
+  enable_ocr: false           # Optional — requires PaddleOCR (Phase 2)
+  enable_scene_detection: true
+  enable_audio_events: true
+  enable_embeddings: true
+
+audio:
+  # parakeet | torch_whisper | faster_whisper
+  #   parakeet       -> NVIDIA NeMo Parakeet. ENGLISH-ONLY, but ~70x realtime on
+  #                     the GB10 GPU (94s clip in ~1.3s). Use for English content.
+  #   torch_whisper  -> openai-whisper on PyTorch; multilingual (99 langs), uses
+  #                     CUDA on aarch64/GB10 (~3x faster than faster_whisper-CPU).
+  #                     Use this for non-English / mixed-language audio.
+  #   faster_whisper -> CTranslate2; multilingual; fast on x86 CUDA / CPU, but the
+  #                     aarch64 wheel is CPU-only. When it can't reach a GPU and a
+  #                     CUDA torch build is present, auto-falls back to torch_whisper.
+  transcription_backend: parakeet
+  # For whisper backends: tiny | base | small | medium | large | large-v3
+  #   (large-v3 is ~as fast as medium on GPU and noticeably more accurate).
+  # For parakeet: a HF model id (e.g. nvidia/parakeet-tdt-0.6b-v2); a whisper
+  #   size here is ignored and the default Parakeet model is used.
+  whisper_model: medium
+  language: auto              # auto or specific language code (en, es, fr, etc.)
+  # Interpreter that has the GPU ASR stack (torch / NeMo). When the main venv
+  # lacks these (the heavy CUDA deps), point parakeet/torch_whisper at an env
+  # that has them; transcription is then run there via subprocess. Leave empty
+  # to run in-process. Overridable with the VIDEO_ANALYSIS_ASR_PYTHON env var.
+  asr_python: /home/tyrel/comfyui-env/bin/python
+  word_timestamps: true
+  diarization_backend: pyannote  # Only used if enable_diarization is true
+
+video:
+  frame_sampling_fps: 0.5     # Frames per second for sampling
+  scene_threshold: 0.3        # FFmpeg scene detection threshold (0.1–1.0)
+  max_frames_per_chunk: 12    # Max visual frames sent to vision model per chunk
+  ocr_backend: paddleocr      # Only used if enable_ocr is true
+
+models:
+  # Reasoning model — used for Pass 1 and Pass 2
+  reasoning_server:
+    type: llama_cpp           # llama_cpp | ollama
+    url: http://localhost:9090
+    model: Huihui-gemma-4-E4B-it-abliterated-Q4_K_M
+    timeout: 300              # seconds
+    temperature: 0.3
+    max_tokens: 4096
+
+  # Vision model — used for visual captioning in Stage 0
+  vision_server:
+    type: llama_cpp           # llama_cpp | ollama
+    url: http://localhost:9090
+    model: Huihui-gemma-4-E4B-it-abliterated-Q4_K_M
+    timeout: 120              # seconds
+    temperature: 0.3
+    max_tokens: 512
+
+  # Embedding model — used for vector search (Phase 2)
+  embedding_server:
+    type: none                # none | llama_cpp | ollama
+
+storage:
+  database: sqlite
+  vector_store: sqlite_fts5   # sqlite_fts5 | chroma (Phase 2)
+  output_dir: ./outputs
+  retain_intermediate_files: true
+
+privacy:
+  local_only: true
+  allow_api_processing: false
+  allow_cloud_uploads: false
+
+# Per-analysis-mode overrides
+modes:
+  quick:
+    chunk_seconds: 300
+    overlap_seconds: 5
+    frame_sampling_fps: 0.2
+    enable_scene_detection: true
+    enable_diarization: false
+    enable_ocr: false
+    enable_audio_events: false
+
+  deep:
+    chunk_seconds: 90
+    overlap_seconds: 10
+    frame_sampling_fps: 0.5
+    enable_scene_detection: true
+    enable_diarization: false
+    enable_ocr: false
+    enable_audio_events: true
+
+  forensic:
+    chunk_seconds: 45
+    overlap_seconds: 15
+    frame_sampling_fps: 2.0
+    enable_scene_detection: true
+    enable_diarization: true
+    enable_ocr: true
+    enable_audio_events: true

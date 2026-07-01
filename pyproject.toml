@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "video-analysis"
+version = "0.1.0"
+description = "Local long-form video analysis engine with staged multimodal reasoning"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "tyrel" },
+]
+keywords = ["video", "transcription", "analysis", "local", "ai", "multimodal"]
+
+dependencies = [
+    # Audio
+    "faster-whisper>=1.0,<2.0",
+    "librosa>=0.11",
+    "scipy>=1.12",
+
+    # Video
+    "opencv-python>=4.8",
+    "pillow>=10.0",
+    "torchcodec>=0.13",
+
+    # Vision / ML
+    "torch>=2.1",
+    "transformers>=4.40",
+    "sentencepiece>=0.2",
+
+    # HTTP / API
+    "httpx>=0.27",
+
+    # Config
+    "pyyaml>=6.0",
+
+    # CLI
+    "click>=8.1",
+
+    # UI
+    "gradio>=4.0",
+
+    # MCP
+    "fastmcp>=3.0",
+
+    # Data validation
+    "pydantic>=2.0",
+
+    # Optional: faster JSON parsing
+    "orjson>=3.9; sys_platform != 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+ocr = [
+    "paddleocr>=2.7",
+    "paddlepaddle>=2.5",
+]
+diarization = [
+    "pyannote.audio>=3.1",
+]
+vector-search = [
+    "chromadb>=0.4",
+]
+
+[project.scripts]
+video-analysis = "video_analysis.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["video_analysis"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
