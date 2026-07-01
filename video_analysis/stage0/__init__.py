@@ -67,6 +67,7 @@ async def run_stage_0(video_path: str, output_dir: str,
                        asr_python: str = "",
                        frame_fps: float = 0.5, scene_threshold: float = 0.3,
                        enable_audio_events: bool = True,
+                       audio_events_backend: str = "librosa",
                        vision_client=None,
                        caption_max_concurrent: int = 4,
                        caption_dedup: bool = True,
@@ -140,16 +141,36 @@ async def run_stage_0(video_path: str, output_dir: str,
         visual_captions = []
     logger.info("Generated %d visual captions", len(visual_captions))
 
-    # 7. Audio events
+    # 7. Audio events — structural (librosa) or semantic (yamnet/AST)
     audio_events = []
     if enable_audio_events:
-        logger.info("Detecting audio events...")
-        events = detect_audio_events(audio_path)
-        audio_events = [
-            {"timestamp": e.timestamp_seconds, "type": e.event_type,
-             "description": e.description, "confidence": e.confidence}
-            for e in events
-        ]
+        use_librosa = audio_events_backend != "yamnet"
+        if audio_events_backend == "yamnet":
+            logger.info("Classifying semantic audio events (AST/AudioSet)...")
+            from .semantic_events import classify_sound_events
+            try:
+                sem = classify_sound_events(audio_path, asr_python=asr_python or None)
+                audio_events = [
+                    {"timestamp": e.start_seconds, "type": e.label,
+                     "description": f"{e.label} ({e.start_seconds:.1f}s–{e.end_seconds:.1f}s)",
+                     "confidence": e.confidence}
+                    for e in sem
+                ]
+                logger.info("Classified %d semantic audio events", len(audio_events))
+            except Exception as exc:
+                # Fall back to librosa only on failure — an empty (but successful)
+                # semantic result is a valid answer for speech-only audio.
+                logger.warning("Semantic audio classification failed (%s); "
+                               "falling back to librosa.", exc)
+                use_librosa = True
+        if use_librosa:
+            logger.info("Detecting audio events (librosa)...")
+            events = detect_audio_events(audio_path)
+            audio_events = [
+                {"timestamp": e.timestamp_seconds, "type": e.event_type,
+                 "description": e.description, "confidence": e.confidence}
+                for e in events
+            ]
         logger.info("Detected %d audio events", len(audio_events))
 
     # 8. Build timeline

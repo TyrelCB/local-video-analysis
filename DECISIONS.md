@@ -9,6 +9,86 @@ decision, alternatives considered, and consequences.
 
 ---
 
+## 2026-07-01 — GPU transcription, semantic audio, and net performance
+
+Context: transcription was the pipeline's #1 bottleneck — ~60% of wall time —
+because `faster-whisper` (CTranslate2) has no aarch64 CUDA wheel and silently
+ran on CPU on the GB10 (a 94 s clip took ~3 min). The GPU was fully capable;
+only that one backend couldn't reach it.
+
+### D7 — Pluggable transcription backend, Parakeet default
+
+**Decision:** a `audio.transcription_backend` knob with three options:
+`parakeet` (NVIDIA NeMo, English-only, ~70x realtime on GPU), `torch_whisper`
+(openai-whisper on PyTorch, 99 languages, GPU on aarch64), and the original
+`faster_whisper`. Default is `parakeet` (content here is mostly English).
+
+**Rejected — WhisperX:** it rides CTranslate2 for its core ASR, the *same*
+thing that has no aarch64 CUDA wheel, so it would be CPU-bound here. Its
+batching/diarization run on torch, but the transcription core defeats the point.
+
+**Rejected — keeping faster_whisper on CPU:** the reason it was on CPU (missing
+ct2 wheel) does not apply to PyTorch — a CUDA torch wheel for aarch64/Blackwell
+exists and is installed. So torch-based ASR was always viable; the project just
+picked the one backend that wasn't.
+
+**Auto-upgrade:** if `faster_whisper` is requested but can't see a CUDA device
+while a CUDA torch build is present, it transparently switches to
+`torch_whisper` — the GPU shouldn't sit idle because of a wheel gap.
+
+**Measured (94 s clip):** parakeet ~1.3 s, torch_whisper ~57 s (medium) / ~59 s
+(large-v3), faster_whisper-CPU ~184 s. On a real 13.5-min video, transcription
+fell from ~26 min (CPU) to ~27 s — from ~60% of wall time to ~3%.
+
+### D8 — Delegate GPU ASR/audio to a separate interpreter via subprocess
+
+**Decision:** the heavy CUDA stack (torch, NeMo, transformers) lives in a
+dedicated env (`~/comfyui-env`, Python 3.12), not the lean main venv (3.13).
+`transcribe_audio` and `classify_sound_events` shell out to `audio.asr_python`
+(or `VIDEO_ANALYSIS_ASR_PYTHON`) via `python -m ...`, exchanging JSON on stdout.
+
+**Rejected — installing torch+CUDA into the main venv:** ~4 GB of CUDA wheels,
+and it couples a 3.13 project to a torch build proven only on 3.12. The
+subprocess boundary keeps the main venv importable without any GPU deps (backends
+lazy-import inside the worker), at the cost of one process spawn per call.
+
+### D9 — Semantic audio events via AST/AudioSet, not TensorFlow YAMNet
+
+**Decision:** `audio.audio_events_backend: librosa | yamnet`. The `yamnet` path
+names sounds (Applause, Laughter, Music, Keyboard, ...) using the MIT Audio
+Spectrogram Transformer fine-tuned on AudioSet, run through `transformers` on
+PyTorch. Same 527-class AudioSet ontology as YAMNet; different runtime.
+
+**Rejected — actual TF-Hub YAMNet:** classic YAMNet is TensorFlow, which has no
+usable aarch64 + CUDA 13 build; TF isn't installed and is painful here. AST gives
+the same labels on the torch stack already present. **Rejected — librosa-only:**
+it's structural (silence/music), never *names* a sound; kept as the default and
+the fallback, not the semantic answer.
+
+**Tuning:** ambient speech labels (Speech, Conversation, "Inside, small room")
+are dropped — they dominate talking-head audio and carry no signal. Score
+threshold is 0.4: below that the model emits low-confidence runner-ups (spurious
+"Sliding door" at 0.09) once speech is filtered. On a speech-only video the
+honest result is *few* events, and that's fine — no invented "dog bark." Falls
+back to librosa on error, but an empty (successful) semantic result is kept as-is.
+
+**Speed:** ~0.3 s per 10 s of audio on the GB10 GPU (batched windows); model
+load ~17 s one-time. Runs via D8 delegation.
+
+### Net performance gain this session
+
+On the 13.5-min token-burn screen recording (deep mode), combining D1–D9:
+
+- **Transcription:** ~26 min (CPU) → ~27 s (Parakeet GPU) — ~60x on that stage.
+- **Captioning:** dedup (~80% frames skipped on this static content) + 8-way
+  concurrency; the dominant remaining cost but massively reduced vs. serial.
+- **Reasoning:** Pass 1 chunks now dispatched 8-concurrent instead of serial.
+
+Transcription went from the largest slice to a rounding error; visual captioning
+is now the sole bottleneck (see the 2026-07-01 throughput section below).
+
+---
+
 ## 2026-07-01 — Captioning & reasoning throughput
 
 Context: on a 13.5-min screen recording (deep mode), visual captioning was

@@ -107,6 +107,7 @@ async def run_pipeline(
             frame_fps=video_cfg.frame_sampling_fps,
             scene_threshold=config.video.scene_threshold,
             enable_audio_events=analysis_cfg.enable_audio_events,
+            audio_events_backend=config.audio.audio_events_backend,
             vision_client=vision_client,
             caption_max_concurrent=video_cfg.caption_max_concurrent,
             caption_dedup=video_cfg.caption_dedup,

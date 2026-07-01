@@ -108,9 +108,11 @@ With dedup + concurrency (below), captioning no longer dominates, so deep mode's
 - **deep**: Standard quality — balanced frame rate, scene-based chunking, audio events
 - **forensic**: Detailed review — dense sampling (2 fps), small chunks, 15s overlap, diarization + OCR (much slower)
 
-*Audio events* (deep/forensic) are **structural acoustic analysis** — silence and
-music/noise regions detected with librosa. This is not semantic sound-event
-classification; it does not label sounds like applause or laughter.
+*Audio events* (deep/forensic) have two backends, set by `audio.audio_events_backend`:
+- **`librosa`** — structural acoustic analysis (silence + music/noise regions). Fast, CPU-only.
+- **`yamnet`** — semantic classification that *names* sounds (applause, laughter,
+  music, keyboard, dog, …) using an AudioSet-trained Audio Spectrogram Transformer,
+  run on the GPU via `asr_python`. Falls back to `librosa` on error.
 
 ## Configuration
 

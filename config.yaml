@@ -12,9 +12,8 @@ analysis:
   enable_diarization: false   # Optional — requires pyannote.audio
   enable_ocr: false           # Optional — requires PaddleOCR (Phase 2)
   enable_scene_detection: true
-  # Structural acoustic analysis (silence + music/noise regions via librosa).
-  # NOT semantic sound-event classification — it does not name sounds like
-  # applause or laughter. Noisy per-syllable onsets are filtered out.
+  # Detect non-speech audio events. Backend is set by audio.audio_events_backend
+  # below (librosa = structural silence/music; yamnet = semantic sound labels).
   enable_audio_events: true
   enable_embeddings: true
 
@@ -42,6 +41,13 @@ audio:
   asr_python: /home/tyrel/comfyui-env/bin/python
   word_timestamps: true
   diarization_backend: pyannote  # Only used if enable_diarization is true
+  # audio_events_backend: how enable_audio_events detects events.
+  #   librosa -> structural analysis (silence + music/noise). Fast, CPU-only.
+  #   yamnet  -> semantic AudioSet classifier (MIT/AST) that NAMES sounds
+  #              (Applause, Laughter, Music, Keyboard, Dog, ...). Runs on the GPU
+  #              via asr_python (torch + transformers); falls back to librosa on
+  #              error. ~0.3s per 10s of audio on the GB10.
+  audio_events_backend: yamnet
 
 video:
   frame_sampling_fps: 0.5     # Frames per second for sampling

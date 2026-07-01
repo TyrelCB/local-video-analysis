@@ -50,6 +50,8 @@ class AudioConfig:
     language: str = "auto"
     word_timestamps: bool = True
     diarization_backend: str = "pyannote"
+    # librosa (structural: silence/music) | yamnet (semantic AudioSet labels)
+    audio_events_backend: str = "librosa"
     # Optional interpreter holding the GPU ASR stack (torch / NeMo). When set,
     # parakeet/torch_whisper run there via subprocess. Empty = run in-process.
     asr_python: str = ""
@@ -134,6 +136,8 @@ class AppConfig:
                 language=au.get("language", cfg.audio.language),
                 word_timestamps=au.get("word_timestamps", cfg.audio.word_timestamps),
                 asr_python=au.get("asr_python", cfg.audio.asr_python),
+                audio_events_backend=au.get(
+                    "audio_events_backend", cfg.audio.audio_events_backend),
             )
 
         # Video
