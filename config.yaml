@@ -66,16 +66,18 @@ video:
 
 models:
   # Reasoning model — used for Pass 1 (per-chunk analysis) and Pass 2 (global
-  # synthesis). Qwen3.6-35B (A3B MoE) with a 256K context: much stronger than the
-  # E4B vision model, and its large context fits all chunk summaries in one Pass 2
-  # prompt. The small-context E4B previously 400'd on Pass 2 for long videos
-  # (a 2h video = 76 chunks overflowed the window). Separate from vision_server
-  # now; the router loads/unloads between the captioning and reasoning stages
-  # (they don't overlap — captioning finishes in Stage 0 before Pass 1 starts).
+  # synthesis). Qwen3.6-35B (A3B MoE), much stronger than the E4B vision model.
+  # This preset runs 1M context via YaRN with parallel=8 (131K per slot): the 8
+  # slots let Pass 1 dispatch reasoning_max_concurrent chunk analyses at once
+  # (measured ~1.27x throughput vs serial on this GPU), and 131K/slot far exceeds
+  # Pass 2's need — the small-context E4B previously 400'd on Pass 2 for long
+  # videos (a 2h video = 76 chunks overflowed its window). Separate from
+  # vision_server; the router loads/unloads between the captioning and reasoning
+  # stages (they don't overlap — captioning finishes in Stage 0 before Pass 1).
   reasoning_server:
     type: llama_cpp           # llama_cpp | ollama
     url: http://localhost:9090
-    model: Qwen3.6-35B-A3B-UD-Q4_K_XL
+    model: Qwen3.6-35b-1M-P2-MTP-NGRAM
     timeout: 600              # seconds (larger model, longer synthesis prompts)
     temperature: 0.3
     max_tokens: 4096
