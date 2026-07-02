@@ -65,28 +65,25 @@ video:
   ocr_backend: paddleocr      # Only used if enable_ocr is true
 
 models:
-  # Reasoning model — used for Pass 1 (per-chunk analysis) and Pass 2 (global
-  # synthesis). Qwen3.6-35B (A3B MoE), much stronger than the E4B vision model.
-  # Uses the 256K-context preset (parallel=1): lighter KV cache (~12GB vs ~47GB
-  # for the 1M/parallel=8 preset) with the same 35B intelligence, and 256K still
-  # holds a 2h video's Pass 2 prompt easily (~16K tokens). The 1M/parallel=8
-  # preset (Qwen3.6-35b-1M-P2-MTP-NGRAM) is still available for very long videos;
-  # parallel batching only gave ~1.27x Pass 1 throughput on this GPU, so the
-  # lighter preset is the default. The small-context E4B previously 400'd on
-  # Pass 2 for long videos (a 2h video = 76 chunks overflowed its window).
-  # Separate from vision_server; the router loads/unloads between the captioning
-  # and reasoning stages (they don't overlap — captioning finishes before Pass 1).
+  # Reasoning model — Pass 1 (per-chunk analysis) and Pass 2 (global synthesis).
+  # Qwen3.6-35B (A3B MoE), 256K context — strong synthesis, holds a 2h video's
+  # Pass 2 prompt easily. Chosen after a vision/reasoning bake-off: a stronger
+  # vision model (Qwen-35B, gemma-4-26B) did NOT reliably fix the remaining misses
+  # (villain identity, "who killed whom") because those are cross-segment facts
+  # not present in any single chunk — the fix is Pass 1 running-context, not the
+  # model. So we keep the fast, proven config and pursue that separately.
   reasoning_server:
     type: llama_cpp           # llama_cpp | ollama
     url: http://localhost:9090
     model: Qwen3.6-35B-A3B-UD-Q4_K_XL
-    timeout: 600              # seconds (larger model, longer synthesis prompts)
+    timeout: 600              # seconds
     temperature: 0.3
     max_tokens: 4096
 
-  # Vision model — used for visual captioning in Stage 0. Kept on the fast little
-  # Gemma-4 E4B (multimodal, parallel=8) so captioning — the pipeline's long pole
-  # — stays quick; reasoning uses the larger Qwen model above.
+  # Vision model — visual captioning in Stage 0. Fast Gemma-4 E4B (multimodal,
+  # parallel=8, ~97 captions/min). Bigger vision models (gemma-4-26B ~65/min,
+  # Qwen-35B ~22/min) gave grounded captions but did not reliably resolve the
+  # cross-segment facts that matter, so the speed of E4B wins here.
   vision_server:
     type: llama_cpp           # llama_cpp | ollama
     url: http://localhost:9090
