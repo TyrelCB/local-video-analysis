@@ -165,6 +165,28 @@ def _build_pass1_moment_times(analysis_results: list[dict] | None) -> dict[str, 
     return index
 
 
+def _as_text(v) -> str:
+    """Coerce a model-returned value to a string. Models sometimes return a
+    list of bullet strings (or a dict) where the schema wants prose; join rather
+    than fail validation."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        return "; ".join(_as_text(x) for x in v)
+    if isinstance(v, dict):
+        return "; ".join(f"{k}: {_as_text(val)}" for k, val in v.items())
+    return "" if v is None else str(v)
+
+
+def _coerce_str_map(v) -> dict:
+    """Coerce a mapping whose values may be lists/objects into dict[str, str].
+    Some models return speaker_summary values as lists of topics; the schema
+    expects a single string per speaker."""
+    if not isinstance(v, dict):
+        return {}
+    return {str(k): _as_text(val) for k, val in v.items()}
+
+
 def _build_analysis_result(data: dict, chunks: list[Chunk],
                             video_duration: float,
                             num_chunks: int,
@@ -250,14 +272,14 @@ def _build_analysis_result(data: dict, chunks: list[Chunk],
 
     return AnalysisResult(
         video_id="",  # Set by caller
-        executive_summary=data.get("executive_summary", ""),
-        detailed_summary=data.get("detailed_summary", ""),
+        executive_summary=_as_text(data.get("executive_summary", "")),
+        detailed_summary=_as_text(data.get("detailed_summary", "")),
         chapters=chapters,
         key_moments=key_moments,
         highlights=highlights,
-        speaker_summary=data.get("speaker_summary", {}),
-        visual_summary=data.get("visual_summary", ""),
-        audio_summary=data.get("audio_summary", ""),
+        speaker_summary=_coerce_str_map(data.get("speaker_summary", {})),
+        visual_summary=_as_text(data.get("visual_summary", "")),
+        audio_summary=_as_text(data.get("audio_summary", "")),
         characters=data.get("characters", []) or [],
         key_events=data.get("key_events", []) or [],
         tags=data.get("tags", _collect_all_tags(data)),
