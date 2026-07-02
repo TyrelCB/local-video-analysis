@@ -37,6 +37,8 @@ PASS2_USER_PROMPT_TEMPLATE = (
     "{all_key_moments}\n\n"
     "--- ALL TAGS ---\n"
     "{all_tags}\n\n"
+    "--- PIVOTAL QUOTES (flagged by segment analysis) ---\n"
+    "{pivotal_quotes}\n\n"
     "--- FULL TRANSCRIPT (verbatim dialogue) ---\n"
     "{transcript}\n\n"
     "The segment summaries above are lossy. The transcript is the ground truth "

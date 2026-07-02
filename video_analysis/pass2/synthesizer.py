@@ -50,6 +50,7 @@ async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
     all_key_moments = _build_key_moments_list(analysis_results)
     all_tags = _build_tags_list(analysis_results)
     transcript_block = _build_transcript_block(transcript_segments)
+    pivotal_quotes = _build_quotes_list(analysis_results)
 
     user_prompt_text = PASS2_USER_PROMPT_TEMPLATE.format(
         num_chunks=len(chunks),
@@ -58,6 +59,7 @@ async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
         all_key_moments=all_key_moments,
         all_tags=all_tags,
         transcript=transcript_block,
+        pivotal_quotes=pivotal_quotes,
     )
 
     messages = [
@@ -131,6 +133,27 @@ def _build_transcript_block(transcript_segments: list | None) -> str:
         prefix = f"[{int(start)}s]" + (f" {speaker}:" if speaker else "")
         lines.append(f"{prefix} {text}")
     return "\n".join(lines) if lines else "(transcript empty)"
+
+
+def _build_quotes_list(analysis_results: list[dict]) -> str:
+    """Collect the pivotal verbatim quotes Pass 1 flagged, across all chunks.
+
+    These are Pass 1's curated selection of plot-bearing lines (accusations,
+    confessions, reveals). The full transcript is also provided, but this
+    highlights the lines Pass 1 judged pivotal.
+    """
+    lines = []
+    for result in analysis_results:
+        for q in result.get("quotes", []) or []:
+            if isinstance(q, dict):
+                t = q.get("time", "")
+                sp = (q.get("speaker") or "").strip()
+                txt = (q.get("text") or "").strip()
+                if txt:
+                    lines.append(f"  [{t}] " + (f"{sp}: " if sp else "") + txt)
+            elif isinstance(q, str) and q.strip():
+                lines.append(f"  {q.strip()}")
+    return "\n".join(lines) if lines else "(no pivotal quotes flagged)"
 
 
 def _build_key_moments_list(analysis_results: list[dict]) -> str:
