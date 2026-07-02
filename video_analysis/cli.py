@@ -99,10 +99,18 @@ def analyze(ctx, video_path: str, mode: str, prompt: str, output_dir: str):
 @click.option("--port", "-p", default=7860, help="Server port.")
 def ui(host: str, port: int):
     """Start the Gradio web UI."""
+    import os
     from .ui.app import create_app
     app = create_app()
     click.echo(f"Starting Gradio UI on http://{host}:{port}")
-    app.launch(server_name=host, server_port=port)
+    # Videos are supplied by absolute path (the path textbox) and played back in
+    # the gr.Video component, so Gradio must be allowed to serve files from
+    # outside its cache. Without this, path inputs under $HOME raise
+    # InvalidPathError ("not created by the application ... not in cwd/temp").
+    app.launch(
+        server_name=host, server_port=port,
+        allowed_paths=[os.path.expanduser("~"), "/tmp", os.getcwd()],
+    )
 
 
 @main.command()
