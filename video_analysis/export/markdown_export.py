@@ -100,6 +100,32 @@ def export_markdown(result: object, metadata: object, video_id: str,
                 lines.append(f"   {desc}")
             lines.append("")
 
+    # Characters / entities (with resolved aliases)
+    characters = data.get("characters", [])
+    if characters:
+        lines.append("## Characters")
+        lines.append("")
+        for ch in characters:
+            name = ch.get("name", "Unknown")
+            aliases = ch.get("aliases", []) or []
+            alias_str = f" (also: {', '.join(aliases)})" if aliases else ""
+            desc = ch.get("description", "")
+            lines.append(f"- **{name}**{alias_str}" + (f" — {desc}" if desc else ""))
+        lines.append("")
+
+    # Key plot/causal events
+    key_events = data.get("key_events", [])
+    if key_events:
+        lines.append("## Key Events")
+        lines.append("")
+        for ev in key_events:
+            time = _ts(ev.get("time", 0))
+            desc = ev.get("description", "")
+            parts = ev.get("participants", []) or []
+            part_str = f" _({', '.join(parts)})_" if parts else ""
+            lines.append(f"- (`{time}`) {desc}{part_str}")
+        lines.append("")
+
     # Action items
     action_items = data.get("action_items", [])
     if action_items:

@@ -42,6 +42,17 @@ class AnalysisResult(BaseModel):
     audio_summary: str = Field(default="",
                                 description="Audio events and patterns throughout the video")
 
+    # Characters / entities resolved across the whole video. Each entry:
+    # {name, aliases: [..], description}. Lets synthesis state that e.g.
+    # "Bradley" and "Mr. Preston" are the same person.
+    characters: list[dict] = Field(default_factory=list,
+                                    description="Resolved characters/entities with aliases")
+
+    # Key plot/causal events across the video: who did what to whom, when.
+    # Each entry: {time, description, participants: [..]}.
+    key_events: list[dict] = Field(default_factory=list,
+                                   description="Causal/plot events (who did what to whom)")
+
     # Tags
     tags: list[str] = Field(default_factory=list)
 
@@ -73,6 +84,8 @@ class AnalysisResult(BaseModel):
             "speaker_summary": self.speaker_summary,
             "visual_summary": self.visual_summary,
             "audio_summary": self.audio_summary,
+            "characters": self.characters,
+            "key_events": self.key_events,
             "tags": self.tags,
             "action_items": self.action_items,
         }
