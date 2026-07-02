@@ -110,6 +110,7 @@ async def run_pipeline(
             scene_threshold=config.video.scene_threshold,
             enable_audio_events=analysis_cfg.enable_audio_events,
             audio_events_backend=config.audio.audio_events_backend,
+            enable_diarization=analysis_cfg.enable_diarization,
             vision_client=vision_client,
             caption_max_concurrent=video_cfg.caption_max_concurrent,
             caption_dedup=video_cfg.caption_dedup,
@@ -136,7 +137,7 @@ async def run_pipeline(
                 "start_seconds": seg.start_seconds,
                 "end_seconds": seg.end_seconds,
                 "text": seg.text,
-                "speaker": "",
+                "speaker": getattr(seg, "speaker", "") or "",
                 "words": str(seg.words),
             }
             for i, seg in enumerate(stage0.transcription.segments)

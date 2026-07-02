@@ -68,6 +68,7 @@ async def run_stage_0(video_path: str, output_dir: str,
                        frame_fps: float = 0.5, scene_threshold: float = 0.3,
                        enable_audio_events: bool = True,
                        audio_events_backend: str = "librosa",
+                       enable_diarization: bool = False,
                        vision_client=None,
                        caption_max_concurrent: int = 4,
                        caption_dedup: bool = True,
@@ -110,6 +111,22 @@ async def run_stage_0(video_path: str, output_dir: str,
                                      asr_python=asr_python or None)
     logger.info("Transcription complete: %d segments, language=%s",
                  len(transcription.segments), transcription.language)
+
+    # 3b. Diarization — label transcript segments with speaker turns. Best-effort:
+    # a failure (e.g. gated model not accepted, pyannote missing) must not sink
+    # the whole pipeline, so we log and continue with unlabeled segments.
+    if enable_diarization and transcription.segments:
+        logger.info("Diarizing speakers...")
+        try:
+            from .diarize import diarize, assign_speakers
+            turns = diarize(audio_path, asr_python=asr_python or None)
+            assign_speakers(transcription.segments, turns)
+            n_spk = len({getattr(s, "speaker", "") for s in transcription.segments
+                         if getattr(s, "speaker", "")})
+            logger.info("Diarization complete: %d turns, %d distinct speaker labels",
+                        len(turns), n_spk)
+        except Exception:
+            logger.exception("Diarization failed; continuing without speaker labels.")
 
     # 4. Scene detection
     logger.info("Detecting scenes...")

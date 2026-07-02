@@ -43,6 +43,7 @@ class TranscriptionSegment:
     end_seconds: float
     words: list[dict] = field(default_factory=list)
     confidence: float = 0.0
+    speaker: str = ""
 
     @property
     def duration_seconds(self) -> float:
