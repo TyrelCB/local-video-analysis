@@ -50,6 +50,10 @@ class AudioConfig:
     language: str = "auto"
     word_timestamps: bool = True
     diarization_backend: str = "pyannote"
+    # Split speech (vocals) from music/SFX (MelBandRoFormer via ComfyUI) before
+    # transcription + diarization. Improves diarization notably but adds ~20 min
+    # for a 2h video. Needs a ComfyUI backend with the MelBandRoFormer node.
+    separate_speech: bool = False
     # librosa (structural: silence/music) | yamnet (semantic AudioSet labels)
     audio_events_backend: str = "librosa"
     # Optional interpreter holding the GPU ASR stack (torch / NeMo). When set,
@@ -136,6 +140,7 @@ class AppConfig:
                 language=au.get("language", cfg.audio.language),
                 word_timestamps=au.get("word_timestamps", cfg.audio.word_timestamps),
                 asr_python=au.get("asr_python", cfg.audio.asr_python),
+                separate_speech=au.get("separate_speech", cfg.audio.separate_speech),
                 audio_events_backend=au.get(
                     "audio_events_backend", cfg.audio.audio_events_backend),
             )

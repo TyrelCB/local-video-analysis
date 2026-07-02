@@ -69,6 +69,7 @@ async def run_stage_0(video_path: str, output_dir: str,
                        enable_audio_events: bool = True,
                        audio_events_backend: str = "librosa",
                        enable_diarization: bool = False,
+                       separate_speech: bool = False,
                        vision_client=None,
                        caption_max_concurrent: int = 4,
                        caption_dedup: bool = True,
@@ -104,9 +105,29 @@ async def run_stage_0(video_path: str, output_dir: str,
     audio_path = os.path.join(output_dir, "audio.wav")
     extract_audio(video_path, audio_path)
 
-    # 3. Transcribe
+    # 2b. Vocal separation — split speech from music/SFX so transcription and
+    # diarization run on clean vocals (much better diarization; fewer ASR errors).
+    # The original mixed audio is kept for structural/semantic audio-event
+    # detection. Best-effort: on failure fall back to the mixed audio. This adds
+    # meaningful runtime (~20 min for a 2h video), hence gated behind a flag.
+    speech_audio_path = audio_path
+    if separate_speech:
+        logger.info("Separating vocals (speech) from music/SFX...")
+        try:
+            from .separate import separate_vocals, is_available
+            if not is_available():
+                raise RuntimeError("ComfyUI backend not reachable for separation")
+            sep_dir = os.path.join(output_dir, "separated")
+            speech_audio_path = separate_vocals(audio_path, sep_dir)
+            logger.info("Vocal separation complete: %s", speech_audio_path)
+        except Exception:
+            logger.exception("Vocal separation failed; using mixed audio for speech.")
+            speech_audio_path = audio_path
+
+    # 3. Transcribe (on clean vocals when separated, else the mix)
     logger.info("Transcribing audio...")
-    transcription = transcribe_audio(audio_path, model_size=model_size, language=language,
+    transcription = transcribe_audio(speech_audio_path, model_size=model_size,
+                                     language=language,
                                      backend=transcription_backend,
                                      asr_python=asr_python or None)
     logger.info("Transcription complete: %d segments, language=%s",
@@ -119,7 +140,9 @@ async def run_stage_0(video_path: str, output_dir: str,
         logger.info("Diarizing speakers...")
         try:
             from .diarize import diarize, assign_speakers
-            turns = diarize(audio_path, asr_python=asr_python or None)
+            # Diarize the clean vocals when available — music/SFX bleed in the mix
+            # makes pyannote over-segment scenes into spurious speakers.
+            turns = diarize(speech_audio_path, asr_python=asr_python or None)
             assign_speakers(transcription.segments, turns)
             n_spk = len({getattr(s, "speaker", "") for s in transcription.segments
                          if getattr(s, "speaker", "")})

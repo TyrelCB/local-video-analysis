@@ -41,6 +41,10 @@ audio:
   asr_python: /home/tyrel/comfyui-env/bin/python
   word_timestamps: true
   diarization_backend: pyannote  # Only used if enable_diarization is true
+  # Split speech (vocals) from music/SFX via MelBandRoFormer (ComfyUI) before
+  # transcription + diarization. Big diarization improvement on mixed film audio,
+  # but adds ~20 min for a 2h video and needs the ComfyUI backend up (:8188).
+  separate_speech: true
   # audio_events_backend: how enable_audio_events detects events.
   #   librosa -> structural analysis (silence + music/noise). Fast, CPU-only.
   #   yamnet  -> semantic AudioSet classifier (MIT/AST) that NAMES sounds
@@ -123,7 +127,7 @@ modes:
     overlap_seconds: 10
     frame_sampling_fps: 0.5
     enable_scene_detection: true
-    enable_diarization: false
+    enable_diarization: true
     enable_ocr: false
     enable_audio_events: true
 

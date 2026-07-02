@@ -111,6 +111,7 @@ async def run_pipeline(
             enable_audio_events=analysis_cfg.enable_audio_events,
             audio_events_backend=config.audio.audio_events_backend,
             enable_diarization=analysis_cfg.enable_diarization,
+            separate_speech=config.audio.separate_speech,
             vision_client=vision_client,
             caption_max_concurrent=video_cfg.caption_max_concurrent,
             caption_dedup=video_cfg.caption_dedup,
