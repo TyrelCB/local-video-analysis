@@ -25,7 +25,8 @@ MAX_RETRIES = 3
 async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
                      video_duration: float, client: LlamaCppClient,
                      user_prompt: str | None = None,
-                     mode: str = "deep") -> AnalysisResult:
+                     mode: str = "deep",
+                     transcript_segments: list | None = None) -> AnalysisResult:
     """Run Pass 2 global synthesis over all chunk analyses.
 
     Args:
@@ -35,6 +36,11 @@ async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
         client: Reasoning model client.
         user_prompt: Optional user-specific analysis request.
         mode: Analysis mode (quick/deep/forensic) — recorded on the result.
+        transcript_segments: Optional raw transcript segments (objects with
+            ``start_seconds`` and ``text``). When provided, the actual dialogue
+            is included in the prompt so synthesis reasons over verbatim lines,
+            not just lossy per-chunk summaries — this is what recovers plot facts
+            (who kills whom, who a character is) that summarization discards.
 
     Returns:
         AnalysisResult with full synthesis.
@@ -43,6 +49,7 @@ async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
     chunk_summaries = _build_chunk_summaries(chunks, analysis_results)
     all_key_moments = _build_key_moments_list(analysis_results)
     all_tags = _build_tags_list(analysis_results)
+    transcript_block = _build_transcript_block(transcript_segments)
 
     user_prompt_text = PASS2_USER_PROMPT_TEMPLATE.format(
         num_chunks=len(chunks),
@@ -50,6 +57,7 @@ async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
         chunk_summaries=chunk_summaries,
         all_key_moments=all_key_moments,
         all_tags=all_tags,
+        transcript=transcript_block,
     )
 
     messages = [
@@ -101,6 +109,28 @@ def _build_chunk_summaries(chunks: list[Chunk],
             f"{summary}"
         )
     return "\n".join(lines)
+
+
+def _build_transcript_block(transcript_segments: list | None) -> str:
+    """Format the raw transcript (timestamped dialogue) for the Pass 2 prompt.
+
+    Per-chunk summaries lose the exact dialogue that carries the plot (who kills
+    whom, confessions, identity reveals). Feeding the verbatim transcript lets
+    synthesis reason over what was actually said. Speaker labels are included
+    when present (diarization) so lines can be attributed correctly.
+    """
+    if not transcript_segments:
+        return "(transcript not provided)"
+    lines = []
+    for seg in transcript_segments:
+        start = getattr(seg, "start_seconds", 0.0)
+        text = (getattr(seg, "text", "") or "").strip()
+        if not text:
+            continue
+        speaker = (getattr(seg, "speaker", "") or "").strip()
+        prefix = f"[{int(start)}s]" + (f" {speaker}:" if speaker else "")
+        lines.append(f"{prefix} {text}")
+    return "\n".join(lines) if lines else "(transcript empty)"
 
 
 def _build_key_moments_list(analysis_results: list[dict]) -> str:

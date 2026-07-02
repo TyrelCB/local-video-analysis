@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Callable
@@ -48,6 +49,7 @@ async def run_pipeline(
     Returns:
         Dict with video_id, status, analysis result, and file paths.
     """
+    pipeline_started = time.monotonic()
     mode = mode or config.analysis.default_mode
     analysis_cfg = config.resolve_analysis_config(mode)
     video_cfg = config.resolve_video_config(mode)
@@ -280,6 +282,7 @@ async def run_pipeline(
             client=reasoning_client,
             user_prompt=user_prompt,
             mode=mode,
+            transcript_segments=stage0.transcription.segments,
         )
 
         result.video_id = video_id
@@ -293,10 +296,27 @@ async def run_pipeline(
         output_paths = _save_outputs(result, output_dir, stage0, chunk_specs,
                                       chunk_analyses, video_id, video_filename)
 
+        elapsed_seconds = time.monotonic() - pipeline_started
+
         return {
             "video_id": video_id,
             "status": "complete",
             "duration": stage0.metadata.duration_human,
+            "elapsed_seconds": elapsed_seconds,
+            "elapsed_human": _format_elapsed(elapsed_seconds),
+            "video_details": {
+                "filename": video_filename,
+                "container": stage0.metadata.container,
+                "file_size_bytes": stage0.metadata.file_size_bytes,
+                "duration_seconds": stage0.metadata.duration_seconds,
+                "video_codec": stage0.metadata.video_stream.codec,
+                "width": stage0.metadata.video_stream.width,
+                "height": stage0.metadata.video_stream.height,
+                "fps": stage0.metadata.video_stream.fps,
+                "audio_codec": stage0.metadata.audio_stream.codec,
+                "audio_sample_rate": stage0.metadata.audio_stream.sample_rate,
+                "audio_channels": stage0.metadata.audio_stream.channels,
+            },
             "summary": {
                 "executive": result.executive_summary,
                 "detailed": result.detailed_summary,
@@ -305,20 +325,42 @@ async def run_pipeline(
             "key_moments": [m.model_dump() for m in result.key_moments[:20]],
             "tags": result.tags,
             "action_items": result.action_items,
+            "transcript": [
+                {
+                    "start_seconds": seg.start_seconds,
+                    "end_seconds": seg.end_seconds,
+                    "text": seg.text,
+                }
+                for seg in stage0.transcription.segments
+            ],
             "report_path": output_paths.get("markdown"),
             "json_path": output_paths.get("json"),
+            "srt_path": output_paths.get("srt"),
             "output_dir": output_dir,
+            "db_path": db_path,
         }
 
     except Exception as e:
         logger.exception("Pipeline failed")
         db.update_video_status(video_id, "failed")
         db.update_job(video_id, status="failed", error_message=str(e))
+        elapsed_seconds = time.monotonic() - pipeline_started
         return {
             "video_id": video_id,
             "status": "failed",
             "error": str(e),
+            "elapsed_seconds": elapsed_seconds,
+            "elapsed_human": _format_elapsed(elapsed_seconds),
         }
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed wall-clock seconds as HH:MM:SS."""
+    total_secs = int(seconds)
+    hours = total_secs // 3600
+    minutes = (total_secs % 3600) // 60
+    secs = total_secs % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def _save_outputs(result: AnalysisResult, output_dir: str,
