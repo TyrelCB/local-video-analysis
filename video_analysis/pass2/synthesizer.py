@@ -159,15 +159,18 @@ def _build_quotes_list(analysis_results: list[dict]) -> str:
 
 
 def _build_events_list(analysis_results: list[dict]) -> str:
-    """Collect Pass 1's per-chunk structured events (actor/action/target) and
-    the set of characters seen, as a compact causal digest for synthesis."""
-    chars: list[str] = []
+    """Collect Pass 1's per-chunk structured events and characters as a causal
+    digest. Character mentions are shown with a per-segment frequency count so
+    synthesis can tell recurring people from one-off noise (a name in 1 segment
+    is likely the same person under another label, or spurious)."""
+    from collections import Counter
+    char_counts: Counter = Counter()
     lines: list[str] = []
     for r in analysis_results:
         for c in r.get("characters_present", []) or []:
             c = c.strip() if isinstance(c, str) else str(c)
-            if c and c not in chars:
-                chars.append(c)
+            if c:
+                char_counts[c] += 1
         for e in r.get("events", []) or []:
             if isinstance(e, dict):
                 actor = str(e.get("actor", "")).strip()
@@ -179,10 +182,15 @@ def _build_events_list(analysis_results: list[dict]) -> str:
             elif isinstance(e, str) and e.strip():
                 lines.append(f"  {e.strip()}")
     parts = []
-    if chars:
-        parts.append("Characters seen across segments: " + ", ".join(chars))
+    if char_counts:
+        roster = ", ".join(f"{name} (×{n})" for name, n in char_counts.most_common())
+        parts.append(
+            "Character mentions across segments (name ×segment-count — this list "
+            "is OVER-SPLIT; low-count and physical-description entries are almost "
+            "always the same few people, merge them): " + roster)
     if lines:
-        parts.append("Causal events (actor — action → target):\n" + "\n".join(lines))
+        parts.append("Causal events (actor — action → target; actors are also "
+                     "over-split, resolve to the merged people):\n" + "\n".join(lines))
     return "\n".join(parts) if parts else "(none extracted)"
 
 
