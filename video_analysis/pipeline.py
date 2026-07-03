@@ -275,6 +275,8 @@ async def run_pipeline(
                 "quotes": analysis.quotes,
                 "issues": analysis.issues,
                 "detected_actions": analysis.detected_actions,
+                "characters_present": analysis.characters_present,
+                "events": analysis.events,
             })
 
         result = await _synthesize(

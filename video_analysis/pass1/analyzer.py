@@ -37,6 +37,10 @@ class ChunkAnalysis:
     issues: list[str] = field(default_factory=list)
     detected_actions: list[str] = field(default_factory=list)
     speaker_labels: list[str] = field(default_factory=list)
+    # Structured plot facts (Phase 1 enrichment): who is on-screen and the causal
+    # events in this segment, so synthesis reasons over facts, not just prose.
+    characters_present: list[str] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)  # {actor, action, target}
     error: str | None = None
 
 
@@ -78,8 +82,20 @@ async def analyze_chunk(chunk: ChunkSpec, client: LlamaCppClient,
         end_seconds=chunk.end_seconds,
     )
 
-    # Build prompt content
-    transcript_text = " ".join(seg.text for seg in chunk.transcript_segments)
+    # Build prompt content. Feed the transcript as timestamped, speaker-labelled
+    # lines — NOT one flattened blob — so per-chunk analysis can attribute who
+    # said what and cite precise times, and so plot-bearing dialogue keeps its
+    # structure through to synthesis. Speaker labels are present when diarization
+    # ran; omitted otherwise.
+    transcript_lines = []
+    for seg in chunk.transcript_segments:
+        text = (seg.text or "").strip()
+        if not text:
+            continue
+        speaker = (getattr(seg, "speaker", "") or "").strip()
+        prefix = f"[{seg.start_seconds:.1f}s]" + (f" {speaker}:" if speaker else "")
+        transcript_lines.append(f"{prefix} {text}")
+    transcript_text = "\n".join(transcript_lines)
     visual_text = "\n".join(f"[{ts:.1f}s] {cap}" for ts, cap in
                              zip(chunk.frame_timestamps, chunk.visual_captions))
     ocr_text = ""  # Placeholder — filled when OCR is enabled
@@ -128,6 +144,8 @@ async def analyze_chunk(chunk: ChunkSpec, client: LlamaCppClient,
                 analysis.issues = data.get("issues", [])
                 analysis.detected_actions = data.get("detected_actions", [])
                 analysis.speaker_labels = data.get("speaker_labels", [])
+                analysis.characters_present = data.get("characters_present", []) or []
+                analysis.events = data.get("events", []) or []
                 return analysis
             except json.JSONDecodeError:
                 logger.warning("Chunk %s: failed to parse JSON on attempt %d",

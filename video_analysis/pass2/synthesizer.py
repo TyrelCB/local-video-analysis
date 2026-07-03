@@ -51,6 +51,7 @@ async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
     all_tags = _build_tags_list(analysis_results)
     transcript_block = _build_transcript_block(transcript_segments)
     pivotal_quotes = _build_quotes_list(analysis_results)
+    events_digest = _build_events_list(analysis_results)
 
     user_prompt_text = PASS2_USER_PROMPT_TEMPLATE.format(
         num_chunks=len(chunks),
@@ -60,6 +61,7 @@ async def synthesize(chunks: list[Chunk], analysis_results: list[dict],
         all_tags=all_tags,
         transcript=transcript_block,
         pivotal_quotes=pivotal_quotes,
+        events_digest=events_digest,
     )
 
     messages = [
@@ -154,6 +156,34 @@ def _build_quotes_list(analysis_results: list[dict]) -> str:
             elif isinstance(q, str) and q.strip():
                 lines.append(f"  {q.strip()}")
     return "\n".join(lines) if lines else "(no pivotal quotes flagged)"
+
+
+def _build_events_list(analysis_results: list[dict]) -> str:
+    """Collect Pass 1's per-chunk structured events (actor/action/target) and
+    the set of characters seen, as a compact causal digest for synthesis."""
+    chars: list[str] = []
+    lines: list[str] = []
+    for r in analysis_results:
+        for c in r.get("characters_present", []) or []:
+            c = c.strip() if isinstance(c, str) else str(c)
+            if c and c not in chars:
+                chars.append(c)
+        for e in r.get("events", []) or []:
+            if isinstance(e, dict):
+                actor = str(e.get("actor", "")).strip()
+                action = str(e.get("action", "")).strip()
+                target = str(e.get("target", "")).strip()
+                if action:
+                    lines.append(f"  {actor or '?'} — {action}"
+                                 + (f" → {target}" if target else ""))
+            elif isinstance(e, str) and e.strip():
+                lines.append(f"  {e.strip()}")
+    parts = []
+    if chars:
+        parts.append("Characters seen across segments: " + ", ".join(chars))
+    if lines:
+        parts.append("Causal events (actor — action → target):\n" + "\n".join(lines))
+    return "\n".join(parts) if parts else "(none extracted)"
 
 
 def _build_key_moments_list(analysis_results: list[dict]) -> str:
