@@ -41,6 +41,13 @@ class Database:
         """Initialize all tables and indexes from SCHEMA_SQL."""
         with self.connection() as conn:
             conn.executescript(SCHEMA_SQL)
+            # Additive migration for DBs created before the chunk plot-fact
+            # columns existed; ignore if already present.
+            for col in ("quotes", "characters", "events"):
+                try:
+                    conn.execute(f"ALTER TABLE chunks ADD COLUMN {col} TEXT")
+                except Exception:
+                    pass
             conn.commit()
 
     @contextmanager
@@ -138,15 +145,19 @@ class Database:
     def insert_chunk(self, chunk_id: str, video_id: str, chunk_index: int,
                      start: float, end: float, transcript: str,
                      visual_summary: str, ocr_text: str, audio_events: str,
-                     summary: str, tags: str) -> None:
+                     summary: str, tags: str,
+                     quotes: str = "", characters: str = "",
+                     events: str = "") -> None:
         """Insert a chunk record."""
         with self.cursor() as cur:
             cur.execute(
                 """INSERT INTO chunks (id, video_id, chunk_index, start_seconds, end_seconds,
-                   transcript, visual_summary, ocr_text, audio_events, summary, tags)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   transcript, visual_summary, ocr_text, audio_events, summary, tags,
+                   quotes, characters, events)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (chunk_id, video_id, chunk_index, start, end,
-                 transcript, visual_summary, ocr_text, audio_events, summary, tags),
+                 transcript, visual_summary, ocr_text, audio_events, summary, tags,
+                 quotes, characters, events),
             )
 
     def insert_key_moments(self, moments: list[tuple]) -> None:

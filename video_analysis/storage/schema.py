@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS chunks (
     audio_events TEXT,               -- JSON array
     summary TEXT,
     tags TEXT,                       -- JSON array
+    quotes TEXT,                     -- JSON array of {time, speaker, text}
+    characters TEXT,                 -- JSON array of names/labels present
+    events TEXT,                     -- JSON array of {actor, action, target}
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY(video_id) REFERENCES videos(id)
 );

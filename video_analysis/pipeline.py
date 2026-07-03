@@ -214,6 +214,9 @@ async def run_pipeline(
                 audio_events=str(analysis.key_moments),
                 summary=analysis.summary,
                 tags=str(analysis.tags),
+                quotes=json.dumps(analysis.quotes),
+                characters=json.dumps(analysis.characters_present),
+                events=json.dumps(analysis.events),
             )
 
             # Store key moments
@@ -233,13 +236,20 @@ async def run_pipeline(
             # Index for search
             from .storage.search import VideoSearch
             search = VideoSearch(db_path)
+            # Fold the structured plot facts into the searchable text so a query
+            # like "who killed" or a character name can hit the right segment.
+            event_text = " ".join(
+                f"{e.get('actor','')} {e.get('action','')} {e.get('target','')}"
+                for e in analysis.events if isinstance(e, dict))
+            searchable_tags = " ".join(
+                analysis.tags + analysis.characters_present) + " " + event_text
             search.add_chunk_content(
                 chunk_id=chunk_id,
                 video_id=video_id,
                 start_seconds=chunk_spec.start_seconds,
                 transcript=analysis.summary,
                 visual_summary="",
-                tags=" ".join(analysis.tags),
+                tags=searchable_tags,
             )
 
         progress("pass1", 80, "Pass 1 complete")
