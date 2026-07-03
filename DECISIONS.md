@@ -192,8 +192,92 @@ parse defensively. Covered by `tests/test_analyzer.py`.
 
 ---
 
+## 2026-07-02 — Long-video robustness, model selection, plot comprehension
+
+Context: box was hanging (power-pull) on 30+ min videos; then a push to make
+long-form *narrative* video (a 2h film) actually comprehensible. All landed on
+`main`. Current pipeline is documented in README/§ below; this records the
+non-obvious decisions and one open issue.
+
+### D10 — Window the long-audio GPU stages; never one-shot a whole file
+Root cause of the box hangs was NOT the audio classifier (my first guess) — it
+was **Parakeet transcription running the whole file in one attention pass**
+(quadratic; a 25-min clip ate ~91 GB unified memory → OOM/hang). Fix: window
+transcription into 10-min chunks and stitch timestamps (`_transcribe_parakeet`).
+Gotcha: do NOT `torch.cuda.empty_cache()` between windows — NeMo holds device
+refs across `transcribe()` calls and it triggers an illegal-memory-access.
+Same windowing pattern later applied to diarization (20-min) and vocal
+separation (20-min FLAC, because ComfyUI 413s on big uploads).
+Verified 15/20/25/30/45/60 min + 2h all complete; min free RAM never < ~56 GB.
+
+### D11 — Never RLIMIT_AS a CUDA process on unified memory
+An "OOM backstop" I added (24 GiB RLIMIT_AS on the AST subprocess) *caused* the
+AST classifier to fail: CUDA reserves a ~130 GB virtual range at context
+creation, so any RLIMIT_AS ceiling makes context creation fail with a
+driver-level "out of memory" regardless of free physical memory. Removed it.
+Also: on this box `torch.cuda.is_available()` returns False when CUDA *init*
+OOMs (not "no GPU") — gate GPU work on a real init check and refuse CPU, don't
+silently fall back (CPU AST on long audio is the other box-killer).
+
+### D12 — Reasoning = Qwen3.6-35B 256K; vision = Gemma-4-E4B (a bake-off result)
+Split reasoning from vision. Reasoning uses Qwen3.6-35B (A3B MoE) at 256K ctx —
+fixes Pass 2 overflow on long videos (76-chunk synthesis prompt overflowed the
+old tiny E4B, which 400'd → fallback). Vision stays on Gemma-4-E4B: a bake-off
+(Qwen-35B, gemma-4-26B) showed bigger vision models don't reliably fix the
+remaining misses and cost throughput (Qwen mmproj = ~1147 img tokens/frame vs
+Gemma ~220 → 4x slower; 26B ~= E4B speed but no accuracy win on the hard facts).
+Larger-ctx reasoning presets exist in ~/models/presets.ini (1M/parallel=8) but
+256K is the lean default. NOTE: llama.cpp `--parallel N` DIVIDES `--ctx-size`
+across slots; KV size tracks ctx-size, not ctx×parallel.
+
+### D13 — Plot comprehension: feed the raw transcript, fix Pass 1 at the source
+The misses (who-killed-whom, villain identity) were LOSSY SUMMARIZATION, not a
+model-quality problem — the facts are verbatim in the transcript, but Pass 1
+flattened each chunk to a bland summary. Fixes, in decreasing proven value:
+(a) feed the full raw transcript into Pass 2 (biggest win — recovered victims,
+killings); (b) enrich Pass 1: timestamped+speaker-labelled input (not a blob),
+structured `characters_present` + `events{actor,action,target}` output, persist
+to DB + FTS, re-analyze low-signal chunks, widen chunk transcript window by
+`overlap_seconds` for boundary-spanning reveals.
+
+### D14 — Diarization + vocal separation: built, defaulted OFF
+Both add real runtime (diar ~6 min, separation ~22 min for 2h) but don't improve
+plot/killer attribution: diarization yields only anonymous window-local
+SPEAKER_xx labels that don't resolve *who* a character is, and vocal separation
+also slightly degrades ASR. A/B'd on the 2h film → net wash. Code kept
+(`stage0/diarize.py`, `stage0/separate.py`), gated behind `enable_diarization`
+(on in forensic) and `audio.separate_speech`. WARNING: installing gradio into
+the comfyui/ASR env to reach audio-sep-mcp broke transformers+pyannote (hub 1.x);
+`separate.py` is deliberately pure-HTTP. pyannote gated models accepted on HF
+(speaker-diarization-3.1 + segmentation-3.0); pyannote 4.x API:
+`from_pretrained(token=...)`, result is `DiarizeOutput` → `.speaker_diarization`.
+
+## Current pipeline & config (as of 1d91006)
+
+Stage 0: metadata → audio extract → [vocal sep OFF] → transcribe (Parakeet,
+windowed) → [diarize OFF] → scenes → frames (0.5fps) → caption (Gemma-E4B, 8
+concurrent) → audio events (AST/YAMNet) → timeline.
+Pass 1 (Qwen3.6-35B, 8 concurrent): 90s/10s-overlap chunks; timestamped+labelled
+transcript in; summary/quotes/characters_present/events out; low-signal retry.
+Pass 2 (Qwen3.6-35B 256K): summaries + raw transcript + quotes + char/event
+digest → executive/detailed summary, chapters, key_moments, characters(+aliases),
+key_events, tags, action_items. Outputs: SQLite + JSON + Markdown + SRT; Gradio
+UI (allowed_paths patched for $HOME) + MCP.
+Backends: llama.cpp router :9090, ComfyUI :8188, ASR/GPU env
+`/home/tyrel/comfyui-env/bin/python` (torch+NeMo+pyannote+transformers).
+
+---
+
 ## Open items (not yet decided)
 
+- **Character identity dedup is unreliable (OPEN, highest priority).** Prompt-based
+  consolidation in Pass 2 is non-deterministic: it merged Bradley correctly in a
+  replay but the full run `9059019f` split him into two ("Mr. Preston" vs "Bradley
+  Preston") and kept a phantom "Mikey". Pass 1 *source* noise is fixed (153→9
+  physical-descriptor labels), but the final character list still flakes run to
+  run. NEXT STEP (agreed, not yet built): a **deterministic post-Pass-2 character
+  merge** — merge entries with overlapping names/surnames/aliases, drop
+  below-frequency-threshold mentions. Code, not prompt, so it can't flake.
 - **Scene detection finds 0 scenes at threshold 0.3 on screen recordings**, so
   deep mode's scene-based chunking silently falls back to fixed 90 s chunks. A
   lower `video.scene_threshold` (~0.1) likely fits screen-capture content, but
