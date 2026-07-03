@@ -100,10 +100,15 @@ def build_chunks(
             end_seconds=round(chunk_end, 3),
         )
 
-        # Assign transcript segments to this chunk
+        # Assign transcript segments to this chunk, extended backward by the
+        # overlap window so a plot reveal that straddles a chunk boundary (e.g. an
+        # accusation at the end of the prior chunk, the reply here) is analyzed
+        # with its run-up, not halved. The chunk's canonical [start, end] is
+        # unchanged; only the dialogue context window is widened at the head.
+        ctx_start = max(0.0, chunk_start - overlap_seconds)
         chunk.transcript_segments = [
             seg for seg in transcription
-            if _overlaps(seg.start_seconds, seg.end_seconds, chunk_start, chunk_end)
+            if _overlaps(seg.start_seconds, seg.end_seconds, ctx_start, chunk_end)
         ]
 
         # Assign scene boundaries
