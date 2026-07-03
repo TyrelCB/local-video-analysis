@@ -121,10 +121,26 @@ async def analyze_chunk(chunk: ChunkSpec, client: LlamaCppClient,
         ChatMessage(role="user", content=user_prompt),
     ]
 
+    # A chunk with substantial dialogue should yield a non-empty summary and,
+    # usually, some structured facts. Treat a valid-but-empty result on a
+    # dialogue-heavy chunk as low-signal and worth one stronger retry, rather
+    # than silently keeping a weak analysis (a source of the plot-comprehension
+    # misses).
+    has_dialogue = len(transcript_text.strip()) >= 120
+
     result = None
     # Retry with JSON extraction
     for attempt in range(MAX_RETRIES):
-        result = await client.chat(messages, temperature=0.3, max_tokens=2048)
+        msgs = messages
+        if attempt > 0:
+            # Nudge harder on retries triggered by low signal.
+            msgs = messages + [ChatMessage(
+                role="system",
+                content="Your previous analysis was empty or missing detail for a "
+                        "segment that clearly contains dialogue. Re-read the "
+                        "transcript and extract the summary, characters_present, "
+                        "events, and pivotal quotes it actually contains.")]
+        result = await client.chat(msgs, temperature=0.3, max_tokens=2048)
 
         if result.is_error:
             analysis.error = result.error
@@ -146,6 +162,14 @@ async def analyze_chunk(chunk: ChunkSpec, client: LlamaCppClient,
                 analysis.speaker_labels = data.get("speaker_labels", [])
                 analysis.characters_present = data.get("characters_present", []) or []
                 analysis.events = data.get("events", []) or []
+
+                low_signal = (has_dialogue and not analysis.summary.strip()
+                              and not analysis.events and not analysis.quotes)
+                if low_signal and attempt < MAX_RETRIES - 1:
+                    logger.info("Chunk %s: low-signal result on a dialogue-heavy "
+                                "segment; re-analyzing (attempt %d).",
+                                chunk.chunk_id, attempt + 1)
+                    continue
                 return analysis
             except json.JSONDecodeError:
                 logger.warning("Chunk %s: failed to parse JSON on attempt %d",
